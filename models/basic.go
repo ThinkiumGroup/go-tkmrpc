@@ -1933,6 +1933,9 @@ func (h *BlockHeader) Summary() string {
 	if h == nil {
 		return "Header<nil>"
 	}
+	if h.ChainID.IsMain() {
+		return fmt.Sprintf("Header{ChainID:%d Height:%s}", h.ChainID, &(h.Height))
+	}
 	return fmt.Sprintf("Header{ChainID:%d Height:%s Parent:%s}", h.ChainID, &(h.Height), &(h.ParentHeight))
 }
 
