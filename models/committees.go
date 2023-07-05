@@ -234,12 +234,8 @@ func (c *Committee) InfoString(level common.IndentLevel) string {
 	buf := new(bytes.Buffer)
 	buf.WriteString("COMM{")
 	if len(c.Members) > 0 {
-		for i, one := range c.Members {
-			if i%8 == 0 {
-				buf.WriteString(fmt.Sprintf("\n%s\t%x", indent, one[:5]))
-			} else {
-				buf.WriteString(fmt.Sprintf(" %x", one[:5]))
-			}
+		for _, one := range c.Members {
+			buf.WriteString(fmt.Sprintf("\n%s\t%x", indent, one[:]))
 		}
 		buf.WriteByte('\n')
 		buf.WriteString(indent)
