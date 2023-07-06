@@ -39,7 +39,7 @@ func (tx *ETHTransaction) ToTransaction() (*Transaction, error) {
 	}
 	var extrakeys = new(Extra)
 	v, r, s := tx.inner.rawSignatureValues()
-	if !availableSignatureValues(v, r, s) {
+	if !AvailableSignatureValues(v, r, s) {
 		return nil, errors.New("available signature values are missing")
 	}
 	switch tx.Type() {

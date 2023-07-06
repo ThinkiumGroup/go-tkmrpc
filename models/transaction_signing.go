@@ -836,7 +836,7 @@ func recoverv(V *big.Int) (*big.Int, error) {
 	return y.Sub(y, thirtyfive), nil
 }
 
-func availableSignatureValues(v, r, s *big.Int) bool {
+func AvailableSignatureValues(v, r, s *big.Int) bool {
 	if (r == nil || r.Sign() <= 0) || (s == nil || s.Sign() <= 0) {
 		return false
 	}

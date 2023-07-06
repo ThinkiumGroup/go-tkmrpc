@@ -599,12 +599,12 @@ func (tx *Transaction) ETHTxType() byte {
 }
 
 func (tx *Transaction) HasSig() bool {
-	return availableSignatureValues(tx.RawSignatureValues())
+	return AvailableSignatureValues(tx.RawSignatureValues())
 }
 
 func (tx *Transaction) GetSignature() (*PubAndSig, error) {
 	v, r, s := tx.RawSignatureValues()
-	if !availableSignatureValues(v, r, s) {
+	if !AvailableSignatureValues(v, r, s) {
 		return nil, nil
 	}
 	vb, err := recoverv(v)
@@ -634,7 +634,7 @@ func (tx *Transaction) ToETH(sig []byte) (*ETHTransaction, error) {
 	txType := tx.ETHTxType()
 	ethChainId := tx.ETHChainID()
 	v, r, s := tx.RawSignatureValues()
-	if !availableSignatureValues(v, r, s) { // no VRS found in extra
+	if !AvailableSignatureValues(v, r, s) { // no VRS found in extra
 		if sig != nil {
 			r, s, v, err = ETHSigner.SignatureValues(ethChainId, txType, sig)
 			if err != nil {
