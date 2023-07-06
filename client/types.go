@@ -300,8 +300,22 @@ func (r *TransactionReceipt) RevertError() error {
 	return models.NewRevertError(r.Revert())
 }
 
-func (r *TransactionReceipt) Successed() bool {
+func (r *TransactionReceipt) Success() bool {
 	return r.Status == models.ReceiptStatusSuccessful
+}
+
+func (r *TransactionReceipt) Err() error {
+	if r.Success() {
+		return nil
+	}
+	if r.Error == "" {
+		return nil
+	}
+	if r.Error == models.ErrExecutionReverted.Error() {
+		return models.NewRevertError(common.CopyBytes(r.Out))
+	} else {
+		return errors.New(r.Error)
+	}
 }
 
 func (r *TransactionReceipt) InfoString(level common.IndentLevel) string {

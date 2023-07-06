@@ -530,7 +530,7 @@ func (c *Client) CallbackAndCheck(sender common.Identifier, callback func(nonce 
 	if err != nil {
 		return nil, err
 	}
-	if receipt.Successed() {
+	if receipt.Success() {
 		return receipt, nil
 	} else {
 		return receipt, fmt.Errorf("error in Receipt: %s", receipt.Error)
