@@ -32,6 +32,7 @@ import (
 	"github.com/ThinkiumGroup/go-tkmrpc/models"
 	"github.com/stephenfire/go-rtl"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 type Adminser interface {
@@ -94,7 +95,7 @@ type (
 
 func (c *Client) NewClient() error {
 	var err error
-	c.NodeConn, err = grpc.Dial(c.Server, grpc.WithInsecure())
+	c.NodeConn, err = grpc.Dial(c.Server, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		return err
 	}
@@ -144,76 +145,170 @@ func (c *Client) _txETHData(from common.Identifier, to *common.Address, nonce ui
 	return ethTx.MarshalBinary()
 }
 
-func (c *Client) _forward(forwarders []common.Identifier, from common.Identifier, to *common.Address, nonce uint64,
-	val *big.Int, input []byte, uselocal bool, gas uint64, extraBytes []byte, mprivs ...[]byte) (
-	txHash []byte, err error) {
-	if len(forwarders) == 0 {
-		return nil, errors.New("no forworders in _forward")
-	}
-	principalData, err := c._txETHData(from, to, nonce, val, input, uselocal, gas, extraBytes, mprivs...)
-	if err != nil {
-		return nil, fmt.Errorf("generate principal eth-transaction data failed: %v", err)
-	}
-	i := 0
-	for ; i < len(forwarders)-1; i++ {
-		fwd := forwarders[i]
-		fwdNonce, err := c.Nonce(fwd.Address())
+func (c *Client) _forward(ctx context.Context, forwarders []common.Identifier, from common.Identifier,
+	to *common.Address, nonce uint64, val *big.Int, input []byte, uselocal bool, gas uint64, extraBytes []byte,
+	mprivs ...[]byte) (txHash []byte, err error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		if len(forwarders) == 0 {
+			return nil, errors.New("no forworders in _forward")
+		}
+		principalData, err := c._txETHData(from, to, nonce, val, input, uselocal, gas, extraBytes, mprivs...)
 		if err != nil {
-			return nil, fmt.Errorf("forwarder(%d) tx nonce failed: %v", i, err)
+			return nil, fmt.Errorf("generate principal eth-transaction data failed: %v", err)
+		}
+		i := 0
+		for ; i < len(forwarders)-1; i++ {
+			fwd := forwarders[i]
+			fwdNonce, err := c.Nonce(ctx, fwd.Address())
+			if err != nil {
+				return nil, fmt.Errorf("forwarder(%d) tx nonce failed: %v", i, err)
+			}
+			fwdInput, err := models.ForwarderAbi.Pack(models.ForwarderForwardMName, principalData)
+			if err != nil {
+				return nil, fmt.Errorf("forwarder(%d) tx input failed: %v", i, err)
+			}
+			principalData, err = c._txETHData(fwd, models.AddressOfForwarder.Copy(), fwdNonce, nil, fwdInput, false, 0, nil)
+			if err != nil {
+				return nil, fmt.Errorf("forwarder(%d) tx eth data failed: %v", i, err)
+			}
+		}
+
+		fwdNonce, err := c.Nonce(ctx, forwarders[i].Address())
+		if err != nil {
+			return nil, fmt.Errorf("generate forwarder(%d) tx nonce failed: %v", i, err)
 		}
 		fwdInput, err := models.ForwarderAbi.Pack(models.ForwarderForwardMName, principalData)
 		if err != nil {
-			return nil, fmt.Errorf("forwarder(%d) tx input failed: %v", i, err)
+			return nil, fmt.Errorf("generate forwarder(%d) tx input failed: %v", i, err)
 		}
-		principalData, err = c._txETHData(fwd, models.AddressOfForwarder.Copy(), fwdNonce, nil, fwdInput, false, 0, nil)
+		return c._sendTx(ctx, forwarders[i].AddressP(), models.AddressOfForwarder.Copy(), fwdNonce, nil, fwdInput,
+			false, 0, nil, forwarders[i].Priv())
+	}
+}
+
+func (c *Client) Tx(ctx context.Context, from common.Identifier, to *common.Address, nonce uint64, val *big.Int,
+	input []byte, uselocal bool) (txHash []byte, err error) {
+	if len(c.Forwarders) > 0 {
+		return c._forward(ctx, c.Forwarders, from, to, nonce, val, input, uselocal, 0, nil)
+	}
+	return c._sendTx(ctx, from.AddressP(), to, nonce, val, input, uselocal, 0, nil, from.Priv())
+}
+
+func (c *Client) TxMS(ctx context.Context, from common.Identifier, to *common.Address, nonce uint64, val *big.Int,
+	input []byte, uselocal bool, gasLimit uint64, extraBytes []byte, mprivs ...[]byte) (txHash []byte, err error) {
+	if len(c.Forwarders) > 0 {
+		return c._forward(ctx, c.Forwarders, from, to, nonce, val, input, uselocal, gasLimit, extraBytes, mprivs...)
+	}
+	return c._sendTx(ctx, from.AddressP(), to, nonce, val, input, uselocal, gasLimit, extraBytes, from.Priv(), mprivs...)
+}
+
+func (c *Client) _sendTx(ctx context.Context, from, to *common.Address, nonce uint64, val *big.Int, input []byte,
+	uselocal bool, gasLimit uint64, extraBytes []byte, priv []byte, mprivs ...[]byte) (txHash []byte, err error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		tx, err := c.MakeRpcTx(from, to, nonce, val, input, uselocal, gasLimit, extraBytes, priv, mprivs...)
 		if err != nil {
-			return nil, fmt.Errorf("forwarder(%d) tx eth data failed: %v", i, err)
+			return nil, err
+		}
+		_, e := tx.ToTx()
+		if e != nil {
+			log.Errorf("%v", e)
+		}
+		if c.Estimating {
+			c.EstimatedRept, c.Err = c._estimate(ctx, tx)
+			return nil, ErrEstimated
+		} else {
+			resp, err := c.NodeClient.SendTx(ctx, tx)
+			if err != nil {
+				return nil, err
+			}
+			if resp.Code != tkmrpc.SuccessCode {
+				log.Errorf("error response: %v", resp)
+				return nil, fmt.Errorf("response error code = %d", resp.Code)
+			}
+			return hexutil.Decode(resp.Data)
 		}
 	}
-
-	fwdNonce, err := c.Nonce(forwarders[i].Address())
-	if err != nil {
-		return nil, fmt.Errorf("generate forwarder(%d) tx nonce failed: %v", i, err)
-	}
-	fwdInput, err := models.ForwarderAbi.Pack(models.ForwarderForwardMName, principalData)
-	if err != nil {
-		return nil, fmt.Errorf("generate forwarder(%d) tx input failed: %v", i, err)
-	}
-	return c._sendTx(forwarders[i].AddressP(), models.AddressOfForwarder.Copy(), fwdNonce, nil, fwdInput,
-		false, 0, nil, forwarders[i].Priv())
 }
 
-func (c *Client) Tx(from common.Identifier, to *common.Address, nonce uint64, val *big.Int, input []byte,
+func (c *Client) SendTx(ctx context.Context, from common.Identifier, to *common.Address, val *big.Int, input []byte,
 	uselocal bool) (txHash []byte, err error) {
-	if len(c.Forwarders) > 0 {
-		return c._forward(c.Forwarders, from, to, nonce, val, input, uselocal, 0, nil)
+	nonce, err := c.Nonce(ctx, from.Address())
+	if err != nil {
+		return nil, common.NewDvppError("get nonce failed", err)
 	}
-	return c._sendTx(from.AddressP(), to, nonce, val, input, uselocal, 0, nil, from.Priv())
+	return c.Tx(ctx, from, to, nonce, val, input, uselocal)
 }
 
-func (c *Client) TxMS(from common.Identifier, to *common.Address, nonce uint64, val *big.Int, input []byte,
-	uselocal bool, gasLimit uint64, extraBytes []byte, mprivs ...[]byte) (txHash []byte, err error) {
-	if len(c.Forwarders) > 0 {
-		return c._forward(c.Forwarders, from, to, nonce, val, input, uselocal, gasLimit, extraBytes, mprivs...)
-	}
-	return c._sendTx(from.AddressP(), to, nonce, val, input, uselocal, gasLimit, extraBytes, from.Priv(), mprivs...)
+func (c *Client) SendCashCashCheck(ctx context.Context, from common.Identifier, input []byte) (txhash []byte, err error) {
+	nonce, err := c.Nonce(ctx, from.Address())
+	return c.Tx(ctx, from, &models.AddressOfCashCashCheck, nonce, nil, input, false)
 }
 
-func (c *Client) _sendTx(from, to *common.Address, nonce uint64, val *big.Int, input []byte, uselocal bool,
-	gasLimit uint64, extraBytes []byte, priv []byte, mprivs ...[]byte) (txHash []byte, err error) {
-	tx, err := c.MakeRpcTx(from, to, nonce, val, input, uselocal, gasLimit, extraBytes, priv, mprivs...)
+func (c *Client) SendCancelCashCheck(ctx context.Context, from common.Identifier, input []byte) (txhash []byte, err error) {
+	nonce, err := c.Nonce(ctx, from.Address())
+	return c.Tx(ctx, from, &models.AddressOfCancelCashCheck, nonce, big.NewInt(0), input, false)
+}
+
+func (c *Client) SendMakeVccProofTx(ctx context.Context, from common.Identifier, cc *models.CashCheck) (txhash []byte, err error) {
+	nonce, err := c.Nonce(ctx, cc.FromAddress)
+	input, err := rtl.Marshal(cc)
 	if err != nil {
 		return nil, err
 	}
-	_, e := tx.ToTx()
-	if e != nil {
-		log.Errorf("%v", e)
+	return c.Tx(ctx, from, &models.AddressOfWriteCashCheck, nonce, nil, input, false)
+}
+
+func (c *Client) MakeVccProof(ctx context.Context, cc *models.CashCheck) (proof string, err error) {
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	default:
+		ccreq := c.ccToRpcCC(cc)
+		resp, err := c.NodeClient.MakeVccProof(ctx, ccreq)
+		if err != nil {
+			return "", err
+		}
+		if resp.Code != tkmrpc.SuccessCode {
+			return "", fmt.Errorf("response error code = %d", resp.Code)
+		}
+		return resp.Data, nil
 	}
-	if c.Estimating {
-		c.EstimatedRept, c.Err = c._estimate(tx)
-		return nil, ErrEstimated
-	} else {
-		resp, err := c.NodeClient.SendTx(context.Background(), tx)
+}
+
+func (c *Client) MakeCCCExistenceProof(ctx context.Context, cc *models.CashCheck) (cce *CashedCheckExistence, err error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		ccreq := c.ccToRpcCC(cc)
+		resp, err := c.NodeClient.MakeCCCExistenceProof(ctx, ccreq)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Code != tkmrpc.SuccessCode {
+			return nil, fmt.Errorf("response error code = %d", resp.Code)
+		}
+		cce = &CashedCheckExistence{}
+		if err := json.Unmarshal([]byte(resp.Data), cce); err != nil {
+			return nil, err
+		}
+		return cce, nil
+	}
+}
+
+func (c *Client) GetCCCRelativeTx(ctx context.Context, cc *models.CashCheck) (hash []byte, err error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		ccreq := c.ccToRpcCC(cc)
+		resp, err := c.NodeClient.GetCCCRelativeTx(ctx, ccreq)
 		if err != nil {
 			return nil, err
 		}
@@ -223,73 +318,6 @@ func (c *Client) _sendTx(from, to *common.Address, nonce uint64, val *big.Int, i
 		}
 		return hexutil.Decode(resp.Data)
 	}
-}
-
-func (c *Client) SendTx(from common.Identifier, to *common.Address, val *big.Int, input []byte,
-	uselocal bool) (txHash []byte, err error) {
-	nonce, err := c.Nonce(from.Address())
-	if err != nil {
-		return nil, common.NewDvppError("get nonce failed", err)
-	}
-	return c.Tx(from, to, nonce, val, input, uselocal)
-}
-
-func (c *Client) SendCashCashCheck(from common.Identifier, input []byte) (txhash []byte, err error) {
-	nonce, err := c.Nonce(from.Address())
-	return c.Tx(from, &models.AddressOfCashCashCheck, nonce, nil, input, false)
-}
-
-func (c *Client) SendCancelCashCheck(from common.Identifier, input []byte) (txhash []byte, err error) {
-	nonce, err := c.Nonce(from.Address())
-	return c.Tx(from, &models.AddressOfCancelCashCheck, nonce, big.NewInt(0), input, false)
-}
-
-func (c *Client) SendMakeVccProofTx(from common.Identifier, cc *models.CashCheck) (txhash []byte, err error) {
-	nonce, err := c.Nonce(cc.FromAddress)
-	input, err := rtl.Marshal(cc)
-	if err != nil {
-		return nil, err
-	}
-	return c.Tx(from, &models.AddressOfWriteCashCheck, nonce, nil, input, false)
-}
-
-func (c *Client) MakeVccProof(cc *models.CashCheck) (proof string, err error) {
-	ccreq := c.ccToRpcCC(cc)
-	resp, err := c.NodeClient.MakeVccProof(context.Background(), ccreq)
-	if resp.Code != tkmrpc.SuccessCode {
-		log.Errorf("error response: %v", resp)
-		return "", fmt.Errorf("response error code = %d", resp.Code)
-	}
-	return resp.Data, nil
-
-}
-
-func (c *Client) MakeCCCExistenceProof(cc *models.CashCheck) (cce *CashedCheckExistence, err error) {
-	ccreq := c.ccToRpcCC(cc)
-	resp, err := c.NodeClient.MakeCCCExistenceProof(context.Background(), ccreq)
-	if resp.Code != tkmrpc.SuccessCode {
-		log.Errorf("error response: %v", resp)
-		return nil, fmt.Errorf("response error code = %d", resp.Code)
-	}
-	cce = &CashedCheckExistence{}
-	if err := json.Unmarshal([]byte(resp.Data), cce); err != nil {
-		return nil, err
-	}
-	return cce, nil
-}
-
-func (c *Client) GetCCCRelativeTx(cc *models.CashCheck) (hash []byte, err error) {
-	ccreq := c.ccToRpcCC(cc)
-	resp, err := c.NodeClient.GetCCCRelativeTx(context.Background(), ccreq)
-	if err != nil {
-		return nil, err
-	}
-	if resp.Code != tkmrpc.SuccessCode {
-		log.Errorf("error response: %v", resp)
-		return nil, fmt.Errorf("response error code = %d", resp.Code)
-	}
-	return hexutil.Decode(resp.Data)
-
 }
 
 func (c *Client) ccToRpcCC(cc *models.CashCheck) *tkmrpc.RpcCashCheck {
@@ -311,75 +339,90 @@ func (c *Client) ccToRpcCC(cc *models.CashCheck) *tkmrpc.RpcCashCheck {
 	return ccreq
 }
 
-func (c *Client) SendTxMS(from common.Identifier, to *common.Address, val *big.Int, input []byte,
+func (c *Client) SendTxMS(ctx context.Context, from common.Identifier, to *common.Address, val *big.Int, input []byte,
 	uselocal bool, gasLimit uint64, extra []byte, mprivs ...[]byte) (txHash []byte, err error) {
-	nonce, err := c.Nonce(from.Address())
+	nonce, err := c.Nonce(ctx, from.Address())
 	if err != nil {
 		return nil, common.NewDvppError("get nonce failed", err)
 	}
-	return c.TxMS(from, to, nonce, val, input, uselocal, gasLimit, extra, mprivs...)
+	return c.TxMS(ctx, from, to, nonce, val, input, uselocal, gasLimit, extra, mprivs...)
 }
 
-func (c *Client) ReceiptByHash(txHash []byte) (*TransactionReceipt, error) {
-	req := &tkmrpc.RpcTXHash{Chainid: uint32(c.CurrentChain), Hash: txHash}
-	resp, err := c.NodeClient.GetTransactionByHash(context.Background(), req)
-	if err != nil {
-		return nil, err
+func (c *Client) ReceiptByHash(ctx context.Context, txHash []byte) (*TransactionReceipt, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		req := &tkmrpc.RpcTXHash{Chainid: uint32(c.CurrentChain), Hash: txHash}
+		resp, err := c.NodeClient.GetTransactionByHash(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Code != tkmrpc.SuccessCode {
+			log.Debugf("error respose: %v", resp)
+			return nil, fmt.Errorf("respose error code = %d", resp.Code)
+		}
+		rec := new(TransactionReceipt)
+		err = json.Unmarshal([]byte(resp.Data), rec)
+		if err != nil {
+			return nil, err
+		}
+		return rec, nil
 	}
-	if resp.Code != tkmrpc.SuccessCode {
-		log.Debugf("error respose: %v", resp)
-		return nil, fmt.Errorf("respose error code = %d", resp.Code)
-	}
-	rec := new(TransactionReceipt)
-	err = json.Unmarshal([]byte(resp.Data), rec)
-	if err != nil {
-		return nil, err
-	}
-	return rec, nil
 }
 
-func (c *Client) TxByHash(txHash []byte) (*ReceiptWithFwds, error) {
-	rept, err := c.ReceiptByHash(txHash)
+func (c *Client) TxByHash(ctx context.Context, txHash []byte) (*ReceiptWithFwds, error) {
+	rept, err := c.ReceiptByHash(ctx, txHash)
 	if err != nil {
 		return nil, err
 	}
 	return NewReceiptWithForwards(rept)
 }
 
-func (c *Client) RRTxByHash(txHash []byte) (*RRTx, error) {
-	req := &tkmrpc.RpcTXHash{Chainid: uint32(c.CurrentChain), Hash: txHash}
-	resp, err := c.NodeClient.GetRRTxByHash(context.Background(), req)
-	if err != nil {
-		return nil, err
+func (c *Client) RRTxByHash(ctx context.Context, txHash []byte) (*RRTx, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		req := &tkmrpc.RpcTXHash{Chainid: uint32(c.CurrentChain), Hash: txHash}
+		resp, err := c.NodeClient.GetRRTxByHash(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Code != tkmrpc.SuccessCode {
+			return nil, fmt.Errorf("response error: %v", resp.Msg)
+		}
+		rrtx := new(RRTx)
+		if err = rtl.Unmarshal(resp.Stream, rrtx); err != nil {
+			return nil, fmt.Errorf("unmarshal failed: %v", err)
+		}
+		return rrtx, nil
 	}
-	if resp.Code != tkmrpc.SuccessCode {
-		return nil, fmt.Errorf("response error: %v", resp.Msg)
-	}
-	rrtx := new(RRTx)
-	if err = rtl.Unmarshal(resp.Stream, rrtx); err != nil {
-		return nil, fmt.Errorf("unmarshal failed: %v", err)
-	}
-	return rrtx, nil
 }
 
-func (c *Client) TxProof(txHash []byte) (*TxProof, error) {
-	req := &tkmrpc.RpcTXHash{Chainid: uint32(c.CurrentChain), Hash: txHash}
-	resp, err := c.NodeClient.GetTxProof(context.Background(), req)
-	if err != nil {
-		return nil, err
+func (c *Client) TxProof(ctx context.Context, txHash []byte) (*TxProof, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		req := &tkmrpc.RpcTXHash{Chainid: uint32(c.CurrentChain), Hash: txHash}
+		resp, err := c.NodeClient.GetTxProof(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Code != tkmrpc.SuccessCode {
+			log.Debugf("error respose: %v", resp)
+			return nil, fmt.Errorf("respose error code = %d", resp.Code)
+		} else {
+			log.Infof("%s", resp.Data)
+		}
+		rec := new(TxProof)
+		err = json.Unmarshal([]byte(resp.Data), rec)
+		if err != nil {
+			return nil, err
+		}
+		return rec, nil
 	}
-	if resp.Code != tkmrpc.SuccessCode {
-		log.Debugf("error respose: %v", resp)
-		return nil, fmt.Errorf("respose error code = %d", resp.Code)
-	} else {
-		log.Infof("%s", resp.Data)
-	}
-	rec := new(TxProof)
-	err = json.Unmarshal([]byte(resp.Data), rec)
-	if err != nil {
-		return nil, err
-	}
-	return rec, nil
 }
 
 func (c *Client) MakeRpcTx(from, to *common.Address, nonce uint64, val *big.Int, input []byte, uselocal bool,
@@ -391,73 +434,88 @@ func (c *Client) MakeRpcTx(from, to *common.Address, nonce uint64, val *big.Int,
 	return (*tkmrpc.RpcTx)(nil).FromTx(tx)
 }
 
-func (c *Client) Call(from, to *common.Address, nonce uint64, val *big.Int, input []byte,
+func (c *Client) Call(ctx context.Context, from, to *common.Address, nonce uint64, val *big.Int, input []byte,
 	uselocal bool) (*ReceiptWithFwds, error) {
-	return c.CallMS(from, to, nonce, val, input, uselocal, 0, nil)
+	return c.CallMS(ctx, from, to, nonce, val, input, uselocal, 0, nil)
 }
 
-func (c *Client) CallMS(from, to *common.Address, nonce uint64, val *big.Int, input []byte,
+func (c *Client) CallMS(ctx context.Context, from, to *common.Address, nonce uint64, val *big.Int, input []byte,
 	uselocal bool, gasLimit uint64, extraBytes []byte, mprivs ...[]byte) (receipt *ReceiptWithFwds, err error) {
-	tx, err := c.MakeRpcTx(from, to, nonce, val, input, uselocal, gasLimit, extraBytes, nil, mprivs...)
-	if err != nil {
-		return nil, err
-	}
-	log.Debugf("Calling tx:\n%s", tx.InfoString(0))
-	resp, err := c.NodeClient.CallTransaction(context.Background(), tx)
-	if err != nil {
-		return nil, err
-	}
-	if resp.Code != tkmrpc.SuccessCode {
-		log.Errorf("error response: %v", resp)
-		return nil, fmt.Errorf("response error code = %d", resp.Code)
-	}
-	rec := new(TransactionReceipt)
-	if err = json.Unmarshal([]byte(resp.Data), rec); err != nil {
-		return nil, err
-	} else {
-		return NewReceiptWithForwards(rec)
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		tx, err := c.MakeRpcTx(from, to, nonce, val, input, uselocal, gasLimit, extraBytes, nil, mprivs...)
+		if err != nil {
+			return nil, err
+		}
+		log.Debugf("Calling tx:\n%s", tx.InfoString(0))
+		resp, err := c.NodeClient.CallTransaction(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Code != tkmrpc.SuccessCode {
+			log.Errorf("error response: %v", resp)
+			return nil, fmt.Errorf("response error code = %d", resp.Code)
+		}
+		rec := new(TransactionReceipt)
+		if err = json.Unmarshal([]byte(resp.Data), rec); err != nil {
+			return nil, err
+		} else {
+			return NewReceiptWithForwards(rec)
+		}
 	}
 }
 
-func (c *Client) Account(addr common.Address) (*AccountWithCode, error) {
-	rpcaddress := &tkmrpc.RpcAddress{
-		Chainid: uint32(c.CurrentChain),
-		Address: addr[:],
+func (c *Client) Account(ctx context.Context, addr common.Address) (*AccountWithCode, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		rpcaddress := &tkmrpc.RpcAddress{
+			Chainid: uint32(c.CurrentChain),
+			Address: addr[:],
+		}
+		resp, err := c.NodeClient.GetAccount(ctx, rpcaddress)
+		if err != nil {
+			return nil, err
+		}
+		acc := new(AccountWithCode)
+		if err := json.Unmarshal([]byte(resp.Data), acc); err != nil {
+			return nil, err
+		}
+		log.Infof("Account: %s", resp.Data)
+		return acc, nil
 	}
-	resp, err := c.NodeClient.GetAccount(context.Background(), rpcaddress)
-	if err != nil {
-		return nil, err
-	}
-	acc := new(AccountWithCode)
-	if err := json.Unmarshal([]byte(resp.Data), acc); err != nil {
-		return nil, err
-	}
-	log.Infof("Account: %s", resp.Data)
-	return acc, nil
 }
 
-func (c *Client) AccountAtHeight(height common.Height, addr common.Address) (*AccountWithCode, error) {
-	req := &tkmrpc.RpcAccountAt{
-		Chainid: uint32(c.CurrentChain),
-		Height:  uint64(height),
-		Address: addr[:],
+func (c *Client) AccountAtHeight(ctx context.Context, height common.Height, addr common.Address) (*AccountWithCode, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		req := &tkmrpc.RpcAccountAt{
+			Chainid: uint32(c.CurrentChain),
+			Height:  uint64(height),
+			Address: addr[:],
+		}
+		resp, err := c.NodeClient.GetAccountAtHeight(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Code != tkmrpc.SuccessCode {
+			return nil, fmt.Errorf("operation failed with code:%d msg:%s", resp.Code, resp.Data)
+		}
+		acc := new(AccountWithCode)
+		if err := json.Unmarshal([]byte(resp.Data), acc); err != nil {
+			return nil, fmt.Errorf("unmarshal failed: %v", err)
+		}
+		return acc, nil
 	}
-	resp, err := c.NodeClient.GetAccountAtHeight(context.Background(), req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.Code != tkmrpc.SuccessCode {
-		return nil, fmt.Errorf("operation failed with code:%d msg:%s", resp.Code, resp.Data)
-	}
-	acc := new(AccountWithCode)
-	if err := json.Unmarshal([]byte(resp.Data), acc); err != nil {
-		return nil, fmt.Errorf("unmarshal failed: %v", err)
-	}
-	return acc, nil
 }
 
-func (c *Client) Nonce(addr common.Address) (uint64, error) {
-	acc, err := c.Account(addr)
+func (c *Client) Nonce(ctx context.Context, addr common.Address) (uint64, error) {
+	acc, err := c.Account(ctx, addr)
 	if err != nil {
 		return 0, err
 	}
@@ -467,26 +525,26 @@ func (c *Client) Nonce(addr common.Address) (uint64, error) {
 	return acc.Nonce, nil
 }
 
-func (c *Client) Tokens(addr common.Address) (*big.Int, *big.Int) {
-	acc, err := c.Account(addr)
+func (c *Client) Tokens(ctx context.Context, addr common.Address) (*big.Int, *big.Int, error) {
+	acc, err := c.Account(ctx, addr)
 	if err != nil {
-		panic(addr.String() + " " + err.Error())
+		return nil, nil, err
 	}
 	if acc.LocalCurrency == nil {
 		acc.LocalCurrency = big.NewInt(0)
 	}
-	return acc.Balance, acc.LocalCurrency
+	return acc.Balance, acc.LocalCurrency, nil
 }
 
 // 根据txHash，获取交易执行回执，
 // 第一个为回执内容
 // 第二个为可能出现的错误，如果回执不为nil，且err不为nil，则说明执行失败，err为失败原因
-func (c *Client) TxReceipt(txHash []byte) (*ReceiptWithFwds, error) {
+func (c *Client) TxReceipt(ctx context.Context, txHash []byte) (*ReceiptWithFwds, error) {
 	var rec *TransactionReceipt
 	var err error
 	for i := 0; i < 5; i++ {
 		time.Sleep(3 * time.Second)
-		rec, err = c.ReceiptByHash(txHash)
+		rec, err = c.ReceiptByHash(ctx, txHash)
 		if err != nil {
 			if i < 5 {
 				continue
@@ -499,14 +557,14 @@ func (c *Client) TxReceipt(txHash []byte) (*ReceiptWithFwds, error) {
 	return nil, ErrNoReceipt
 }
 
-func (c *Client) RunAndCheck(txHash []byte, runErr error) (*ReceiptWithFwds, error) {
+func (c *Client) RunAndCheck(ctx context.Context, txHash []byte, runErr error) (*ReceiptWithFwds, error) {
 	if runErr == ErrEstimated {
 		return c.EstimatedRept, c.Err
 	}
 	if runErr != nil {
 		return nil, common.NewDvppError("run failed", runErr)
 	}
-	rec, err := c.TxReceipt(txHash)
+	rec, err := c.TxReceipt(ctx, txHash)
 	if err != nil {
 		if err == ErrNoReceipt {
 			return nil, ErrNoReceipt
@@ -516,9 +574,9 @@ func (c *Client) RunAndCheck(txHash []byte, runErr error) (*ReceiptWithFwds, err
 	return rec, nil
 }
 
-func (c *Client) CallbackAndCheck(sender common.Identifier, callback func(nonce uint64) (txHash []byte, runErr error)) (
-	*ReceiptWithFwds, error) {
-	nonce, err := c.Nonce(sender.Address())
+func (c *Client) CallbackAndCheck(ctx context.Context, sender common.Identifier,
+	callback func(nonce uint64) (txHash []byte, runErr error)) (*ReceiptWithFwds, error) {
+	nonce, err := c.Nonce(ctx, sender.Address())
 	if err != nil {
 		return nil, fmt.Errorf("get nonce of %s failed: %v", sender.Address(), err)
 	}
@@ -526,7 +584,7 @@ func (c *Client) CallbackAndCheck(sender common.Identifier, callback func(nonce 
 	if err == ErrEstimated {
 		return c.EstimatedRept, c.Err
 	}
-	receipt, err := c.RunAndCheck(txHash, err)
+	receipt, err := c.RunAndCheck(ctx, txHash, err)
 	if err != nil {
 		return nil, err
 	}
@@ -537,74 +595,93 @@ func (c *Client) CallbackAndCheck(sender common.Identifier, callback func(nonce 
 	}
 }
 
-func (c *Client) LastConfirmedsAt(id common.ChainID, height common.Height) (*Confirmeds, error) {
-	resp, err := c.NodeClient.GetConfirmeds(context.Background(), &tkmrpc.RpcBlockHeight{
-		Chainid: uint32(id),
-		Height:  uint64(height),
-	})
-	if err != nil {
-		return nil, err
+func (c *Client) LastConfirmedsAt(ctx context.Context, id common.ChainID, height common.Height) (*Confirmeds, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		resp, err := c.NodeClient.GetConfirmeds(ctx, &tkmrpc.RpcBlockHeight{
+			Chainid: uint32(id),
+			Height:  uint64(height),
+		})
+		if err != nil {
+			return nil, err
+		}
+		confirmeds := new(Confirmeds)
+		if err := rtl.Unmarshal(resp.Stream, confirmeds); err != nil {
+			return nil, fmt.Errorf("unmarshal failed: %v", err)
+		}
+		return confirmeds, nil
 	}
-	confirmeds := new(Confirmeds)
-	if err := rtl.Unmarshal(resp.Stream, confirmeds); err != nil {
-		return nil, fmt.Errorf("unmarshal failed: %v", err)
-	}
-	return confirmeds, nil
 }
 
-func (c *Client) ChainStats() (*models.ChainStats, error) {
-	resp, err := c.NodeClient.GetStats(context.Background(), &tkmrpc.RpcStatsReq{
-		Chainid: uint32(c.CurrentChain),
-	})
-	if err != nil {
-		return nil, err
+func (c *Client) ChainStats(ctx context.Context) (*models.ChainStats, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		resp, err := c.NodeClient.GetStats(ctx, &tkmrpc.RpcStatsReq{Chainid: uint32(c.CurrentChain)})
+		if err != nil {
+			return nil, err
+		}
+		stats := new(models.ChainStats)
+		if err := json.Unmarshal([]byte(resp.Data), stats); err != nil {
+			return nil, err
+		}
+		return stats, nil
 	}
-	stats := new(models.ChainStats)
-	if err := json.Unmarshal([]byte(resp.Data), stats); err != nil {
-		return nil, err
-	}
-	return stats, nil
 }
 
-func (c *Client) BlockHeader(height common.Height) (*BlockInfo, error) {
-	req := &tkmrpc.RpcBlockHeight{
-		Chainid: uint32(c.CurrentChain),
-		Height:  uint64(height),
+func (c *Client) BlockHeader(ctx context.Context, height common.Height) (*BlockInfo, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		req := &tkmrpc.RpcBlockHeight{
+			Chainid: uint32(c.CurrentChain),
+			Height:  uint64(height),
+		}
+		resp, err := c.NodeClient.GetBlockHeader(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		info := new(BlockInfo)
+		if resp.Code != 0 {
+			return nil, errors.New(resp.Data)
+		}
+		if err := json.Unmarshal([]byte(resp.Data), info); err != nil {
+			return nil, err
+		}
+		return info, nil
 	}
-	resp, err := c.NodeClient.GetBlockHeader(context.Background(), req)
-	if err != nil {
-		return nil, err
-	}
-	info := new(BlockInfo)
-	if resp.Code != 0 {
-		return nil, errors.New(resp.Data)
-	}
-	if err := json.Unmarshal([]byte(resp.Data), info); err != nil {
-		return nil, err
-	}
-	return info, nil
 }
 
-func (c *Client) Committee(epoch common.EpochNum) ([]common.NodeID, error) {
-	req := &tkmrpc.RpcChainEpoch{
-		Chainid: uint32(c.CurrentChain),
-		Epoch:   uint64(epoch),
+func (c *Client) Committee(ctx context.Context, epoch common.EpochNum) ([]common.NodeID, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		req := &tkmrpc.RpcChainEpoch{
+			Chainid: uint32(c.CurrentChain),
+			Epoch:   uint64(epoch),
+		}
+		resp, err := c.NodeClient.GetCommittee(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Code != 0 {
+			return nil, errors.New(resp.Data)
+		}
+		nids := make([]common.NodeID, 0)
+		if err := json.Unmarshal([]byte(resp.Data), &nids); err != nil {
+			return nil, err
+		}
+		return nids, nil
 	}
-	resp, err := c.NodeClient.GetCommittee(context.Background(), req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.Code != 0 {
-		return nil, errors.New(resp.Data)
-	}
-	nids := make([]common.NodeID, 0)
-	if err := json.Unmarshal([]byte(resp.Data), &nids); err != nil {
-		return nil, err
-	}
-	return nids, nil
 }
 
-func (c *Client) SetChainSetting(privs [][]byte, sender common.Identifier, nonce uint64, name string, value []byte) ([]byte, error) {
+func (c *Client) SetChainSetting(ctx context.Context, privs [][]byte, sender common.Identifier, nonce uint64,
+	name string, value []byte) ([]byte, error) {
 	request := &models.SetChainSettingRequest{
 		Data: &models.ChainSetting{
 			Sender: sender.Address(),
@@ -620,16 +697,18 @@ func (c *Client) SetChainSetting(privs [][]byte, sender common.Identifier, nonce
 	if err != nil {
 		return nil, err
 	}
-	return c.TxMS(sender, models.AddressOfChainSettings.Copy(), nonce, nil, input, false, 0, nil, privs...)
+	return c.TxMS(ctx, sender, models.AddressOfChainSettings.Copy(), nonce, nil, input, false, 0, nil, privs...)
 }
 
-func (c *Client) ChainSetting(chainAdminPrivs [][]byte, sender common.Identifier, name string, value []byte) (bool, *ReceiptWithFwds, error) {
+func (c *Client) ChainSetting(ctx context.Context, chainAdminPrivs [][]byte, sender common.Identifier,
+	name string, value []byte) (bool, *ReceiptWithFwds, error) {
 	// set
-	nonce, err := c.Nonce(sender.Address())
+	nonce, err := c.Nonce(ctx, sender.Address())
 	if err != nil {
 		return false, nil, err
 	}
-	rcpt, err := c.RunAndCheck(c.SetChainSetting(chainAdminPrivs, sender, nonce, name, value))
+	txhash, err := c.SetChainSetting(ctx, chainAdminPrivs, sender, nonce, name, value)
+	rcpt, err := c.RunAndCheck(ctx, txhash, err)
 	if err != nil {
 		return false, nil, err
 	}
@@ -639,11 +718,11 @@ func (c *Client) ChainSetting(chainAdminPrivs [][]byte, sender common.Identifier
 	log.Infof("设置Name:%s Tx 执行成功", name)
 
 	// get
-	nonce, err = c.Nonce(sender.Address())
+	nonce, err = c.Nonce(ctx, sender.Address())
 	if err != nil {
 		return false, nil, err
 	}
-	receipt, err := c.Call(sender.AddressP(), models.AddressOfChainSettings.Copy(), nonce, nil, append([]byte{0x1}, []byte(name)...), false)
+	receipt, err := c.Call(ctx, sender.AddressP(), models.AddressOfChainSettings.Copy(), nonce, nil, append([]byte{0x1}, []byte(name)...), false)
 	fmt.Println("receipts: ", receipt)
 	if receipt.Status == models.ReceiptStatusSuccessful {
 		if bytes.Equal(receipt.Out, value) {
@@ -668,7 +747,7 @@ func (c *Client) makeRRDepositInput(nodeId common.NodeID, nodePriv []byte, nodeT
 		[common.AddressLength]byte(bindAddr), nonce, amount, sigStr)
 }
 
-func (c *Client) Deposit(sender common.Identifier, nodeType common.NodeType, nodeId common.NodeID,
+func (c *Client) Deposit(ctx context.Context, sender common.Identifier, nodeType common.NodeType, nodeId common.NodeID,
 	nodePriv []byte, nonce uint64, amount *big.Int, binderAddrs ...common.Address) (txHash []byte, err error) {
 	binderAddr := sender.Address()
 	if len(binderAddrs) > 0 {
@@ -678,17 +757,18 @@ func (c *Client) Deposit(sender common.Identifier, nodeType common.NodeType, nod
 	if err != nil {
 		return nil, err
 	}
-	return c.Tx(sender, &models.AddressOfRequiredReserve, nonce, amount, input, false)
+	return c.Tx(ctx, sender, &models.AddressOfRequiredReserve, nonce, amount, input, false)
 }
 
-func (c *Client) DepositAndCheck(binder common.Identifier, nodeType common.NodeType,
+func (c *Client) DepositAndCheck(ctx context.Context, binder common.Identifier, nodeType common.NodeType,
 	node common.NodeIdentifier, amount *big.Int) (bool, error) {
-	nonce, err := c.Nonce(binder.Address())
+	nonce, err := c.Nonce(ctx, binder.Address())
 	if err != nil {
 		return false, fmt.Errorf("get nonce of %s failed: %v", binder.Address(), err)
 	}
 
-	rec, err := c.RunAndCheck(c.Deposit(binder, nodeType, node.NodeID(), node.Priv(), nonce, amount))
+	txhash, err := c.Deposit(ctx, binder, nodeType, node.NodeID(), node.Priv(), nonce, amount)
+	rec, err := c.RunAndCheck(ctx, txhash, err)
 	if err != nil {
 		return false, err
 	}
@@ -703,7 +783,8 @@ func (c *Client) DepositAndCheck(binder common.Identifier, nodeType common.NodeT
 	}
 }
 
-func (c *Client) Withdraw(sender common.Identifier, nonce uint64, nodeId common.NodeID, binderAddrs ...common.Address) ([]byte, error) {
+func (c *Client) Withdraw(ctx context.Context, sender common.Identifier, nonce uint64, nodeId common.NodeID,
+	binderAddrs ...common.Address) ([]byte, error) {
 	binderAddr := sender.Address()
 	if len(binderAddrs) > 0 {
 		binderAddr = binderAddrs[0]
@@ -712,10 +793,11 @@ func (c *Client) Withdraw(sender common.Identifier, nonce uint64, nodeId common.
 	if err != nil {
 		return nil, fmt.Errorf("pack input failed: %v", err)
 	}
-	return c.Tx(sender, &models.AddressOfRequiredReserve, nonce, nil, input, false)
+	return c.Tx(ctx, sender, &models.AddressOfRequiredReserve, nonce, nil, input, false)
 }
 
-func (c *Client) WithdrawPart(sender common.Identifier, nonce uint64, nodeId common.NodeID, amount *big.Int, binderAddrs ...common.Address) ([]byte, error) {
+func (c *Client) WithdrawPart(ctx context.Context, sender common.Identifier, nonce uint64, nodeId common.NodeID,
+	amount *big.Int, binderAddrs ...common.Address) ([]byte, error) {
 	binderAddr := sender.Address()
 	if len(binderAddrs) > 0 {
 		binderAddr = binderAddrs[0]
@@ -724,63 +806,74 @@ func (c *Client) WithdrawPart(sender common.Identifier, nonce uint64, nodeId com
 	if err != nil {
 		return nil, fmt.Errorf("pack input failed: %v", err)
 	}
-	return c.Tx(sender, &models.AddressOfRequiredReserve, nonce, nil, input, false)
+	return c.Tx(ctx, sender, &models.AddressOfRequiredReserve, nonce, nil, input, false)
 }
 
-func (c *Client) GetRRProofs(rootHash common.Hash, id common.NodeIdentifier) (*models.RRProofs, error) {
-	req := &tkmrpc.RpcRRProofReq{
-		ChainId:  uint32(c.CurrentChain),
-		RootHash: rootHash[:],
-		NodeHash: id.NodeID().Hash().Bytes(),
-		Pub:      id.Pub(),
+func (c *Client) GetRRProofs(ctx context.Context, rootHash common.Hash, id common.NodeIdentifier) (*models.RRProofs, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		req := &tkmrpc.RpcRRProofReq{
+			ChainId:  uint32(c.CurrentChain),
+			RootHash: rootHash[:],
+			NodeHash: id.NodeID().Hash().Bytes(),
+			Pub:      id.Pub(),
+		}
+		reqHash, err := common.HashObject(req)
+		if err != nil {
+			return nil, fmt.Errorf("hash object failed: %v", err)
+		}
+		sig, err := models.TKMCipher.Sign(id.Priv(), reqHash)
+		if err != nil {
+			return nil, fmt.Errorf("sign request faile: %v", err)
+		}
+		req.Sig = sig
+		resp, err := c.NodeClient.GetRRProofs(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Code != 0 {
+			return nil, fmt.Errorf("errcode:%d error:%s", resp.Code, resp.Data)
+		}
+		bs, err := hex.DecodeString(resp.Data)
+		if err != nil {
+			return nil, fmt.Errorf("decode response failed: %v", err)
+		}
+		proof := new(models.RRProofs)
+		if err = rtl.Unmarshal(bs, proof); err != nil {
+			return nil, fmt.Errorf("unmarshal failed: %v", err)
+		}
+		return proof, nil
 	}
-	reqHash, err := common.HashObject(req)
-	if err != nil {
-		return nil, fmt.Errorf("hash object failed: %v", err)
-	}
-	sig, err := models.TKMCipher.Sign(id.Priv(), reqHash)
-	if err != nil {
-		return nil, fmt.Errorf("sign request faile: %v", err)
-	}
-	req.Sig = sig
-	resp, err := c.NodeClient.GetRRProofs(context.Background(), req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.Code != 0 {
-		return nil, fmt.Errorf("errcode:%d error:%s", resp.Code, resp.Data)
-	}
-	bs, err := hex.DecodeString(resp.Data)
-	if err != nil {
-		return nil, fmt.Errorf("decode response failed: %v", err)
-	}
-	proof := new(models.RRProofs)
-	if err = rtl.Unmarshal(bs, proof); err != nil {
-		return nil, fmt.Errorf("unmarshal failed: %v", err)
-	}
-	return proof, nil
 }
 
-func (c *Client) GetRRCurrent() ([]byte, error) {
-	req := &tkmrpc.RpcChainRequest{
-		Chainid: uint32(c.CurrentChain),
+func (c *Client) GetRRCurrent(ctx context.Context) ([]byte, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		req := &tkmrpc.RpcChainRequest{
+			Chainid: uint32(c.CurrentChain),
+		}
+		resp, err := c.NodeClient.GetRRCurrent(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Code != 0 {
+			return nil, fmt.Errorf("errcode:%d error:%s", resp.Code, resp.Data)
+		}
+		bs, err := hex.DecodeString(resp.Data)
+		if err != nil {
+			return nil, fmt.Errorf("decode response failed: %v", err)
+		}
+		return bs, nil
 	}
-	resp, err := c.NodeClient.GetRRCurrent(context.Background(), req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.Code != 0 {
-		return nil, fmt.Errorf("errcode:%d error:%s", resp.Code, resp.Data)
-	}
-	bs, err := hex.DecodeString(resp.Data)
-	if err != nil {
-		return nil, fmt.Errorf("decode response failed: %v", err)
-	}
-	return bs, nil
 }
 
-func (c *Client) ChangeRRStatus(auth common.Identifier, nid common.NodeID, statusVal int16, setOrClr bool) (bool, string, error) {
-	nonce, err := c.Nonce(auth.Address())
+func (c *Client) ChangeRRStatus(ctx context.Context, auth common.Identifier, nid common.NodeID,
+	statusVal int16, setOrClr bool) (bool, string, error) {
+	nonce, err := c.Nonce(ctx, auth.Address())
 	if err != nil {
 		return false, "", err
 	}
@@ -792,11 +885,11 @@ func (c *Client) ChangeRRStatus(auth common.Identifier, nid common.NodeID, statu
 	if err != nil {
 		return false, "", err
 	}
-	txHash, err := c.Tx(auth, &models.AddressOfRequiredReserve, nonce, nil, input, false)
+	txHash, err := c.Tx(ctx, auth, &models.AddressOfRequiredReserve, nonce, nil, input, false)
 	if err != nil {
 		return false, "", err
 	}
-	rec, err := c.TxReceipt(txHash)
+	rec, err := c.TxReceipt(ctx, txHash)
 	if err != nil {
 		return false, "", err
 	}
@@ -814,8 +907,8 @@ func (c *Client) ChangeRRStatus(auth common.Identifier, nid common.NodeID, statu
 	return false, "", ErrShouldNotBeNil
 }
 
-func (c *Client) CallRRInfo(requester common.Identifier, nid common.NodeID) (*models.POSInfo, bool, error) {
-	nonce, err := c.Nonce(requester.Address())
+func (c *Client) CallRRInfo(ctx context.Context, requester common.Identifier, nid common.NodeID) (*models.POSInfo, bool, error) {
+	nonce, err := c.Nonce(ctx, requester.Address())
 	if err != nil {
 		return nil, false, err
 	}
@@ -823,7 +916,7 @@ func (c *Client) CallRRInfo(requester common.Identifier, nid common.NodeID) (*mo
 	if err != nil {
 		return nil, false, err
 	}
-	rec, err := c.Call(requester.AddressP(), &models.AddressOfRequiredReserve, nonce, nil, input, false)
+	rec, err := c.Call(ctx, requester.AddressP(), &models.AddressOfRequiredReserve, nonce, nil, input, false)
 	if err != nil {
 		return nil, false, err
 	}
@@ -842,8 +935,9 @@ func (c *Client) CallRRInfo(requester common.Identifier, nid common.NodeID) (*mo
 	}
 }
 
-func (c *Client) CallRRProof(requester common.Identifier, nid common.NodeID, era common.EraNum, rrRoot common.Hash) (*models.RRProofs, bool, error) {
-	nonce, err := c.Nonce(requester.Address())
+func (c *Client) CallRRProof(ctx context.Context, requester common.Identifier, nid common.NodeID,
+	era common.EraNum, rrRoot common.Hash) (*models.RRProofs, bool, error) {
+	nonce, err := c.Nonce(ctx, requester.Address())
 	if err != nil {
 		return nil, false, err
 	}
@@ -851,7 +945,7 @@ func (c *Client) CallRRProof(requester common.Identifier, nid common.NodeID, era
 	if err != nil {
 		return nil, false, err
 	}
-	rec, err := c.Call(requester.AddressP(), &models.AddressOfRequiredReserve, nonce, nil, input, false)
+	rec, err := c.Call(ctx, requester.AddressP(), &models.AddressOfRequiredReserve, nonce, nil, input, false)
 	if err != nil {
 		return nil, false, err
 	}
@@ -912,70 +1006,83 @@ func (c *Client) CallRRProof(requester common.Identifier, nid common.NodeID, era
 // 	return c.TxMS(sender, &models.AddressOfRequiredReserve, nonce, nil, input, false, models.GasLimit, consNodeId.Priv())
 // }
 
-func (c *Client) RRDelegate(sender common.Identifier, nonce uint64, nodeId common.NodeID, amount *big.Int) (txHash []byte, err error) {
+func (c *Client) RRDelegate(ctx context.Context, sender common.Identifier, nonce uint64, nodeId common.NodeID,
+	amount *big.Int) (txHash []byte, err error) {
 	input, err := models.RRAbi.Pack(models.RRDelegateMName, nodeId[:], amount)
 	if err != nil {
 		return nil, fmt.Errorf("pack input failed: %v", err)
 	}
-	return c.Tx(sender, &models.AddressOfRequiredReserve, nonce, amount, input, false)
+	return c.Tx(ctx, sender, &models.AddressOfRequiredReserve, nonce, amount, input, false)
 }
 
-func (c *Client) RRUnDelegate(sender common.Identifier, nonce uint64, nodeId common.NodeID, amount *big.Int) (txHash []byte, err error) {
+func (c *Client) RRUnDelegate(ctx context.Context, sender common.Identifier, nonce uint64, nodeId common.NodeID,
+	amount *big.Int) (txHash []byte, err error) {
 	input, err := models.RRAbi.Pack(models.RRUnDelegateMName, nodeId[:], amount)
 	if err != nil {
 		return nil, fmt.Errorf("pack input failed: %v", err)
 	}
-	return c.Tx(sender, &models.AddressOfRequiredReserve, nonce, big.NewInt(0), input, false)
+	return c.Tx(ctx, sender, &models.AddressOfRequiredReserve, nonce, big.NewInt(0), input, false)
 }
 
-func (c *Client) GetRRNodeInfo(era common.EraNum, root []byte, nodeId common.NodeID) (*RRNodeInfo, error) {
-	eraInt := int64(-1)
-	if era.IsNil() == false {
-		eraInt = int64(era)
+func (c *Client) GetRRNodeInfo(ctx context.Context, era common.EraNum, root []byte, nodeId common.NodeID) (*RRNodeInfo, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		eraInt := int64(-1)
+		if era.IsNil() == false {
+			eraInt = int64(era)
+		}
+		req := &tkmrpc.RpcGetRRInfoReq{
+			NodeId: nodeId[:],
+			Era:    eraInt,
+			Root:   root,
+		}
+		resp, err := c.NodeClient.GetRRInfo(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("respond error: %v", err)
+		}
+		if resp.Code != tkmrpc.SuccessCode {
+			return nil, fmt.Errorf("message error: %v", resp.Msg)
+		}
+		if len(resp.Stream) == 0 {
+			return nil, errors.New("respond empty stream")
+		}
+		info := new(RRNodeInfo)
+		if err := rtl.Unmarshal(resp.Stream, info); err != nil {
+			return nil, fmt.Errorf("unmarshal failed: %v", err)
+		}
+		return info, nil
 	}
-	req := &tkmrpc.RpcGetRRInfoReq{
-		NodeId: nodeId[:],
-		Era:    eraInt,
-		Root:   root,
-	}
-	resp, err := c.NodeClient.GetRRInfo(context.Background(), req)
-	if err != nil {
-		return nil, fmt.Errorf("respond error: %v", err)
-	}
-	if resp.Code != tkmrpc.SuccessCode {
-		return nil, fmt.Errorf("message error: %v", resp.Msg)
-	}
-	if len(resp.Stream) == 0 {
-		return nil, errors.New("respond empty stream")
-	}
-	info := new(RRNodeInfo)
-	if err := rtl.Unmarshal(resp.Stream, info); err != nil {
-		return nil, fmt.Errorf("unmarshal failed: %v", err)
-	}
-	return info, nil
 }
 
-func (c *Client) ListRRChanges(root []byte) (*RRChanges, error) {
-	req := &tkmrpc.RpcRRChangesReq{Root: root}
-	resp, err := c.NodeClient.ListRRChanges(context.Background(), req)
-	if err != nil {
-		return nil, fmt.Errorf("respond error: %v", err)
+func (c *Client) ListRRChanges(ctx context.Context, root []byte) (*RRChanges, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		req := &tkmrpc.RpcRRChangesReq{Root: root}
+		resp, err := c.NodeClient.ListRRChanges(ctx, req)
+		if err != nil {
+			return nil, fmt.Errorf("respond error: %v", err)
+		}
+		if resp.Code != tkmrpc.SuccessCode {
+			return nil, fmt.Errorf("message error: %v", resp.Msg)
+		}
+		if len(resp.Stream) == 0 {
+			return nil, errors.New("respond empty stream")
+		}
+		changes := new(RRChanges)
+		if err := rtl.Unmarshal(resp.Stream, changes); err != nil {
+			return nil, fmt.Errorf("unmarshal failed: %v", err)
+		}
+		return changes, nil
 	}
-	if resp.Code != tkmrpc.SuccessCode {
-		return nil, fmt.Errorf("message error: %v", resp.Msg)
-	}
-	if len(resp.Stream) == 0 {
-		return nil, errors.New("respond empty stream")
-	}
-	changes := new(RRChanges)
-	if err := rtl.Unmarshal(resp.Stream, changes); err != nil {
-		return nil, fmt.Errorf("unmarshal failed: %v", err)
-	}
-	return changes, nil
 }
 
-func (c *Client) ManageChain(requester common.Identifier, adminPrivs [][]byte, name string, params ...interface{}) error {
-	nonce, err := c.Nonce(requester.Address())
+func (c *Client) ManageChain(ctx context.Context, requester common.Identifier, adminPrivs [][]byte,
+	name string, params ...interface{}) error {
+	nonce, err := c.Nonce(ctx, requester.Address())
 	if err != nil {
 		return err
 	}
@@ -984,8 +1091,9 @@ func (c *Client) ManageChain(requester common.Identifier, adminPrivs [][]byte, n
 		return err
 	}
 
-	rec, err := c.RunAndCheck(c.TxMS(requester, &models.AddressOfManageChains, nonce, nil,
-		input, false, 0, nil, adminPrivs...))
+	txhash, err := c.TxMS(ctx, requester, &models.AddressOfManageChains, nonce, nil,
+		input, false, 0, nil, adminPrivs...)
+	rec, err := c.RunAndCheck(ctx, txhash, err)
 	if err != nil {
 		return err
 	}
@@ -1004,76 +1112,78 @@ func (c *Client) ManageChain(requester common.Identifier, adminPrivs [][]byte, n
 	}
 }
 
-func (c *Client) MCHCreateChain(requester common.Identifier, adminPrivs [][]byte, chainInfoInput *models.MChainInfoInput) error {
+func (c *Client) MCHCreateChain(ctx context.Context, requester common.Identifier, adminPrivs [][]byte,
+	chainInfoInput *models.MChainInfoInput) error {
 	log.Infof("to create %+v", chainInfoInput)
-	return c.ManageChain(requester, adminPrivs, models.MChainCreateChain, chainInfoInput)
+	return c.ManageChain(ctx, requester, adminPrivs, models.MChainCreateChain, chainInfoInput)
 }
 
-func (c *Client) MCHRestartChain(requester common.Identifier, adminPrivs [][]byte, chainComm *models.MChainCommInput) error {
+func (c *Client) MCHRestartChain(ctx context.Context, requester common.Identifier, adminPrivs [][]byte,
+	chainComm *models.MChainCommInput) error {
 	log.Infof("to restart %+v", chainComm)
-	return c.ManageChain(requester, adminPrivs, models.MChainRestartChain, chainComm)
+	return c.ManageChain(ctx, requester, adminPrivs, models.MChainRestartChain, chainComm)
 }
 
-func (c *Client) MCHRemoveChain(requester common.Identifier, adminPrivs [][]byte, id common.ChainID) error {
+func (c *Client) MCHRemoveChain(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, id common.ChainID) error {
 	log.Infof("to remove ChainID:%d", id)
-	return c.ManageChain(requester, adminPrivs, models.MChainRemoveChain, uint32(id))
+	return c.ManageChain(ctx, requester, adminPrivs, models.MChainRemoveChain, uint32(id))
 }
 
-func (c *Client) MCHStartChain(requester common.Identifier, adminPrivs [][]byte, id common.ChainID) error {
+func (c *Client) MCHStartChain(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, id common.ChainID) error {
 	log.Infof("to start ChainID:%d", id)
-	return c.ManageChain(requester, adminPrivs, models.MChainStartChain, uint32(id))
+	return c.ManageChain(ctx, requester, adminPrivs, models.MChainStartChain, uint32(id))
 }
 
-func (c *Client) MCHAddBootNode(requester common.Identifier, adminPrivs [][]byte, id common.ChainID,
+func (c *Client) MCHAddBootNode(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, id common.ChainID,
 	bn *models.MChainBootNode) error {
 	log.Infof("to add bootNode %+v to ChainID:%d", bn, id)
-	return c.ManageChain(requester, adminPrivs, models.MChainAddBootNode, uint32(id), bn)
+	return c.ManageChain(ctx, requester, adminPrivs, models.MChainAddBootNode, uint32(id), bn)
 }
 
-func (c *Client) MCHRemoveBootNode(requester common.Identifier, adminPrivs [][]byte, id common.ChainID, nid common.NodeID) error {
+func (c *Client) MCHRemoveBootNode(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, id common.ChainID, nid common.NodeID) error {
 	log.Infof("to remove bootNode %s from ChainID:%d", nid, id)
-	return c.ManageChain(requester, adminPrivs, models.MChainRemoveBootNode, uint32(id), nid[:])
+	return c.ManageChain(ctx, requester, adminPrivs, models.MChainRemoveBootNode, uint32(id), nid[:])
 }
 
-func (c *Client) MCHAddDataNode(requester common.Identifier, adminPrivs [][]byte, id common.ChainID,
+func (c *Client) MCHAddDataNode(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, id common.ChainID,
 	nid common.NodeID, rrProof *models.RRProofs) error {
 	log.Infof("to add dataNode %s(%s) to ChainID:%d", nid, rrProof, id)
 	proofbytes, err := rtl.Marshal(rrProof)
 	if err != nil {
 		return err
 	}
-	return c.ManageChain(requester, adminPrivs, models.MChainAddDataNode, uint32(id), nid[:], proofbytes)
+	return c.ManageChain(ctx, requester, adminPrivs, models.MChainAddDataNode, uint32(id), nid[:], proofbytes)
 }
 
-func (c *Client) MCHRemoveDataNode(requester common.Identifier, adminPrivs [][]byte, id common.ChainID, nid common.NodeID) error {
+func (c *Client) MCHRemoveDataNode(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, id common.ChainID, nid common.NodeID) error {
 	log.Infof("to remove dataNode %s from ChainID:%d", nid, id)
-	return c.ManageChain(requester, adminPrivs, models.MChainRemoveDataNode, uint32(id), nid[:])
+	return c.ManageChain(ctx, requester, adminPrivs, models.MChainRemoveDataNode, uint32(id), nid[:])
 }
 
-func (c *Client) MCHAddAdmin(requester common.Identifier, adminPrivs [][]byte, id common.ChainID,
+func (c *Client) MCHAddAdmin(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, id common.ChainID,
 	newAdmin common.Identifier) error {
 	need := math.Int64MulRat(int64(len(adminPrivs)), big.NewRat(2, 3))
 	parts := adminPrivs[:need]
 	privs := append([][]byte{newAdmin.Priv()}, parts...)
-	return c.ManageChain(requester, privs, models.MChainAddAdmin, uint32(id), newAdmin.Pub())
+	return c.ManageChain(ctx, requester, privs, models.MChainAddAdmin, uint32(id), newAdmin.Pub())
 }
 
-func (c *Client) MCHDelAdmin(requester common.Identifier, adminPrivs [][]byte, id common.ChainID,
+func (c *Client) MCHDelAdmin(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, id common.ChainID,
 	pub []byte) error {
-	return c.ManageChain(requester, adminPrivs, models.MChainDelAdmin, uint32(id), pub)
+	return c.ManageChain(ctx, requester, adminPrivs, models.MChainDelAdmin, uint32(id), pub)
 }
 
-func (c *Client) MCHSetNoGas(requester common.Identifier, adminPrivs [][]byte, id common.ChainID) error {
-	return c.ManageChain(requester, adminPrivs, models.MChainSetNoGas, uint32(id))
+func (c *Client) MCHSetNoGas(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, id common.ChainID) error {
+	return c.ManageChain(ctx, requester, adminPrivs, models.MChainSetNoGas, uint32(id))
 }
 
-func (c *Client) MCHClrNoGas(requester common.Identifier, adminPrivs [][]byte, id common.ChainID) error {
-	return c.ManageChain(requester, adminPrivs, models.MChainClrNoGas, uint32(id))
+func (c *Client) MCHClrNoGas(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, id common.ChainID) error {
+	return c.ManageChain(ctx, requester, adminPrivs, models.MChainClrNoGas, uint32(id))
 }
 
-func (c *Client) MCHGetInfo(requester common.Identifier, id common.ChainID) (*models.MChainInfoOutput, error) {
+func (c *Client) MCHGetInfo(ctx context.Context, requester common.Identifier, id common.ChainID) (*models.MChainInfoOutput, error) {
 	log.Infof("to get chain info of ChainID:%d", id)
-	nonce, err := c.Nonce(requester.Address())
+	nonce, err := c.Nonce(ctx, requester.Address())
 	if err != nil {
 		return nil, err
 	}
@@ -1081,7 +1191,7 @@ func (c *Client) MCHGetInfo(requester common.Identifier, id common.ChainID) (*mo
 	if err != nil {
 		return nil, err
 	}
-	rec, err := c.Call(requester.AddressP(), &models.AddressOfManageChains, nonce, nil, input, false)
+	rec, err := c.Call(ctx, requester.AddressP(), &models.AddressOfManageChains, nonce, nil, input, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1105,9 +1215,9 @@ func (c *Client) MCHGetInfo(requester common.Identifier, id common.ChainID) (*mo
 	}
 }
 
-func (c *Client) ManagedComm(requester common.Identifier, adminPrivs [][]byte, name string,
+func (c *Client) ManagedComm(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, name string,
 	params ...interface{}) (delta int, err error) {
-	nonce, err := c.Nonce(requester.Address())
+	nonce, err := c.Nonce(ctx, requester.Address())
 	if err != nil {
 		return -1, err
 	}
@@ -1115,12 +1225,12 @@ func (c *Client) ManagedComm(requester common.Identifier, adminPrivs [][]byte, n
 	if err != nil {
 		return -1, err
 	}
-	txHash, err := c.TxMS(requester, &models.AddressOfManageCommittee, nonce, nil,
+	txHash, err := c.TxMS(ctx, requester, &models.AddressOfManageCommittee, nonce, nil,
 		input, false, 0, nil, adminPrivs...)
 	if err != nil {
 		return -1, err
 	}
-	rec, err := c.TxReceipt(txHash)
+	rec, err := c.TxReceipt(ctx, txHash)
 	if err != nil {
 		return -1, err
 	}
@@ -1139,16 +1249,16 @@ func (c *Client) ManagedComm(requester common.Identifier, adminPrivs [][]byte, n
 	}
 }
 
-func (c *Client) MCMAddNodes(requester common.Identifier, adminPrivs [][]byte, nids []common.NodeID) (delta int, err error) {
-	return c.ManagedComm(requester, adminPrivs, models.MCommAddNode, common.NodeIDs(nids).ToBytesSlice())
+func (c *Client) MCMAddNodes(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, nids []common.NodeID) (delta int, err error) {
+	return c.ManagedComm(ctx, requester, adminPrivs, models.MCommAddNode, common.NodeIDs(nids).ToBytesSlice())
 }
 
-func (c *Client) MCMDelNodes(requester common.Identifier, adminPrivs [][]byte, nids []common.NodeID) (delta int, err error) {
-	return c.ManagedComm(requester, adminPrivs, models.MCommDelNode, common.NodeIDs(nids).ToBytesSlice())
+func (c *Client) MCMDelNodes(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, nids []common.NodeID) (delta int, err error) {
+	return c.ManagedComm(ctx, requester, adminPrivs, models.MCommDelNode, common.NodeIDs(nids).ToBytesSlice())
 }
 
-func (c *Client) MCMListNodes(requester common.Identifier) ([]common.NodeID, error) {
-	nonce, err := c.Nonce(requester.Address())
+func (c *Client) MCMListNodes(ctx context.Context, requester common.Identifier) ([]common.NodeID, error) {
+	nonce, err := c.Nonce(ctx, requester.Address())
 	if err != nil {
 		return nil, err
 	}
@@ -1156,7 +1266,7 @@ func (c *Client) MCMListNodes(requester common.Identifier) ([]common.NodeID, err
 	if err != nil {
 		return nil, err
 	}
-	rec, err := c.Call(requester.AddressP(), &models.AddressOfManageCommittee, nonce, nil, input, false)
+	rec, err := c.Call(ctx, requester.AddressP(), &models.AddressOfManageCommittee, nonce, nil, input, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1175,8 +1285,8 @@ func (c *Client) MCMListNodes(requester common.Identifier) ([]common.NodeID, err
 	}
 }
 
-func (c *Client) CSGet(requester common.Identifier, key string) (value []byte, exist bool, err error) {
-	nonce, err := c.Nonce(requester.Address())
+func (c *Client) CSGet(ctx context.Context, requester common.Identifier, key string) (value []byte, exist bool, err error) {
+	nonce, err := c.Nonce(ctx, requester.Address())
 	if err != nil {
 		return nil, false, err
 	}
@@ -1184,7 +1294,7 @@ func (c *Client) CSGet(requester common.Identifier, key string) (value []byte, e
 	if err != nil {
 		return nil, false, err
 	}
-	rec, err := c.Call(requester.AddressP(), &models.AddressOfNewChainSettings, nonce, nil, input, false)
+	rec, err := c.Call(ctx, requester.AddressP(), &models.AddressOfNewChainSettings, nonce, nil, input, false)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1204,8 +1314,8 @@ func (c *Client) CSGet(requester common.Identifier, key string) (value []byte, e
 	}
 }
 
-func (c *Client) CSSetOrUnset(requester common.Identifier, adminPrivs [][]byte, name string, params ...interface{}) (bool, error) {
-	nonce, err := c.Nonce(requester.Address())
+func (c *Client) CSSetOrUnset(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, name string, params ...interface{}) (bool, error) {
+	nonce, err := c.Nonce(ctx, requester.Address())
 	if err != nil {
 		return false, err
 	}
@@ -1213,12 +1323,12 @@ func (c *Client) CSSetOrUnset(requester common.Identifier, adminPrivs [][]byte, 
 	if err != nil {
 		return false, err
 	}
-	txHash, err := c.TxMS(requester, &models.AddressOfNewChainSettings, nonce, nil,
+	txHash, err := c.TxMS(ctx, requester, &models.AddressOfNewChainSettings, nonce, nil,
 		input, false, 0, nil, adminPrivs...)
 	if err != nil {
 		return false, err
 	}
-	rec, err := c.TxReceipt(txHash)
+	rec, err := c.TxReceipt(ctx, txHash)
 	if err != nil {
 		return false, err
 	}
@@ -1237,83 +1347,98 @@ func (c *Client) CSSetOrUnset(requester common.Identifier, adminPrivs [][]byte, 
 	}
 }
 
-func (c *Client) CSSet(requester common.Identifier, adminPrivs [][]byte, key string, value []byte) (bool, error) {
-	return c.CSSetOrUnset(requester, adminPrivs, models.CSNameSet, []byte(key), value)
+func (c *Client) CSSet(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, key string, value []byte) (bool, error) {
+	return c.CSSetOrUnset(ctx, requester, adminPrivs, models.CSNameSet, []byte(key), value)
 }
 
-func (c *Client) CSUnset(requester common.Identifier, adminPrivs [][]byte, key string) (bool, error) {
-	return c.CSSetOrUnset(requester, adminPrivs, models.CSNameUnset, []byte(key))
+func (c *Client) CSUnset(ctx context.Context, requester common.Identifier, adminPrivs [][]byte, key string) (bool, error) {
+	return c.CSSetOrUnset(ctx, requester, adminPrivs, models.CSNameUnset, []byte(key))
 }
 
-func (c *Client) GetBlockTxs(height common.Height, page, size int32) (*BlockMessage, error) {
-	req := &tkmrpc.RpcBlockTxsReq{
-		Chainid: uint32(c.CurrentChain),
-		Height:  uint64(height),
-		Page:    page,
-		Size:    size,
-	}
-	resp, err := c.NodeClient.GetBlockTxs(context.Background(), req)
-	if err != nil {
-		return nil, err
-	}
-	msg := new(BlockMessage)
-	err = json.Unmarshal([]byte(resp.Data), msg)
-	if err != nil {
-		return nil, err
-	}
-	return msg, nil
-}
-
-func (c *Client) GetBTransactions(addr common.Address, start, end common.Height) (*BTxs, error) {
-	req := &tkmrpc.RpcTxFilter{
-		Chainid: uint32(c.CurrentChain),
-		Address: &tkmrpc.RpcAddress{
+func (c *Client) GetBlockTxs(ctx context.Context, height common.Height, page, size int32) (*BlockMessage, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		req := &tkmrpc.RpcBlockTxsReq{
 			Chainid: uint32(c.CurrentChain),
-			Address: addr[:],
-		},
-		StartHeight: uint64(start),
-		EndHeight:   uint64(end),
+			Height:  uint64(height),
+			Page:    page,
+			Size:    size,
+		}
+		resp, err := c.NodeClient.GetBlockTxs(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		msg := new(BlockMessage)
+		err = json.Unmarshal([]byte(resp.Data), msg)
+		if err != nil {
+			return nil, err
+		}
+		return msg, nil
 	}
-	resp, err := c.NodeClient.GetBTransactions(context.Background(), req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.Code != tkmrpc.SuccessCode {
-		return nil, fmt.Errorf("%s", resp.Msg)
-	}
-	trs := new(BTxs)
-	if err = rtl.Unmarshal(resp.Stream, &trs); err != nil {
-		return nil, fmt.Errorf("unmarshal response failed: %v", err)
-	}
-	return trs, nil
 }
 
-func (c *Client) GetBlock(height common.Height) (*BlockWithAuditings, error) {
-	req := &tkmrpc.RpcBlockHeight{
-		Chainid: uint32(c.CurrentChain),
-		Height:  uint64(height),
+func (c *Client) GetBTransactions(ctx context.Context, addr common.Address, start, end common.Height) (*BTxs, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		req := &tkmrpc.RpcTxFilter{
+			Chainid: uint32(c.CurrentChain),
+			Address: &tkmrpc.RpcAddress{
+				Chainid: uint32(c.CurrentChain),
+				Address: addr[:],
+			},
+			StartHeight: uint64(start),
+			EndHeight:   uint64(end),
+		}
+		resp, err := c.NodeClient.GetBTransactions(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Code != tkmrpc.SuccessCode {
+			return nil, fmt.Errorf("%s", resp.Msg)
+		}
+		trs := new(BTxs)
+		if err = rtl.Unmarshal(resp.Stream, &trs); err != nil {
+			return nil, fmt.Errorf("unmarshal response failed: %v", err)
+		}
+		return trs, nil
 	}
-	resp, err := c.NodeClient.GetBlock(context.Background(), req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.Code != tkmrpc.SuccessCode {
-		return nil, fmt.Errorf("failed, code: %d, message: %s", resp.Code, resp.Msg)
-	}
-	if len(resp.Stream) == 0 {
-		return nil, errors.New("empty stream")
-	}
-	log.Infof("block data size: %d", len(resp.Stream))
-	// block := new(models.BlockEMessage)
-	block := new(BlockWithAuditings)
-	if err = rtl.Unmarshal(resp.Stream, block); err != nil {
-		return nil, fmt.Errorf("unmarshal failed: %v", err)
-	}
-	return block, nil
 }
 
-func (c *Client) _estimate(tx *tkmrpc.RpcTx) (*ReceiptWithFwds, error) {
-	resp, err := c.NodeClient.Estimate(context.Background(), tx)
+func (c *Client) GetBlock(ctx context.Context, height common.Height) (*BlockWithAuditings, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		req := &tkmrpc.RpcBlockHeight{
+			Chainid: uint32(c.CurrentChain),
+			Height:  uint64(height),
+		}
+		resp, err := c.NodeClient.GetBlock(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Code != tkmrpc.SuccessCode {
+			return nil, fmt.Errorf("failed, code: %d, message: %s", resp.Code, resp.Msg)
+		}
+		if len(resp.Stream) == 0 {
+			return nil, errors.New("empty stream")
+		}
+		log.Infof("block data size: %d", len(resp.Stream))
+		// block := new(models.BlockEMessage)
+		block := new(BlockWithAuditings)
+		if err = rtl.Unmarshal(resp.Stream, block); err != nil {
+			return nil, fmt.Errorf("unmarshal failed: %v", err)
+		}
+		return block, nil
+	}
+}
+
+func (c *Client) _estimate(ctx context.Context, tx *tkmrpc.RpcTx) (*ReceiptWithFwds, error) {
+	resp, err := c.NodeClient.Estimate(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -1327,34 +1452,39 @@ func (c *Client) _estimate(tx *tkmrpc.RpcTx) (*ReceiptWithFwds, error) {
 	return NewReceiptWithForwards(rec, true)
 }
 
-func (c *Client) Estimate(from, to *common.Address, nonce uint64, val *big.Int, input []byte, useLocal bool,
-	gasLimit uint64) (*tkmrpc.RpcTx, *ReceiptWithFwds, error) {
+func (c *Client) Estimate(ctx context.Context, from, to *common.Address, nonce uint64, val *big.Int,
+	input []byte, useLocal bool, gasLimit uint64) (*tkmrpc.RpcTx, *ReceiptWithFwds, error) {
 	rpctx, err := c.MakeRpcTx(from, to, nonce, val, input, useLocal, gasLimit, nil, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("make tx failed: %v", err)
 	}
-	rept, err := c._estimate(rpctx)
+	rept, err := c._estimate(ctx, rpctx)
 	return rpctx, rept, err
 }
 
-func (c *Client) GetCommProof(epoch common.EpochNum) (*RpcCommProof, error) {
-	req := &tkmrpc.RpcChainEpoch{
-		Chainid: uint32(c.CurrentChain),
-		Epoch:   uint64(epoch),
+func (c *Client) GetCommProof(ctx context.Context, epoch common.EpochNum) (*RpcCommProof, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		req := &tkmrpc.RpcChainEpoch{
+			Chainid: uint32(c.CurrentChain),
+			Epoch:   uint64(epoch),
+		}
+		resp, err := c.NodeClient.GetCommWithProof(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Code != tkmrpc.SuccessCode {
+			return nil, fmt.Errorf("get comm of ChainID:%d Epoch:%d with proof failed: %v",
+				c.CurrentChain, epoch, resp.Msg)
+		}
+		cproof := new(RpcCommProof)
+		if err = rtl.Unmarshal(resp.Stream, cproof); err != nil {
+			return nil, fmt.Errorf("unmarshal failed: %v", err)
+		}
+		return cproof, nil
 	}
-	resp, err := c.NodeClient.GetCommWithProof(context.Background(), req)
-	if err != nil {
-		return nil, err
-	}
-	if resp.Code != tkmrpc.SuccessCode {
-		return nil, fmt.Errorf("get comm of ChainID:%d Epoch:%d with proof failed: %v",
-			c.CurrentChain, epoch, resp.Msg)
-	}
-	cproof := new(RpcCommProof)
-	if err = rtl.Unmarshal(resp.Stream, cproof); err != nil {
-		return nil, fmt.Errorf("unmarshal failed: %v", err)
-	}
-	return cproof, nil
 }
 
 func SignDataRequester(dr models.DataRequester, privs ...[]byte) error {
