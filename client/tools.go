@@ -484,7 +484,6 @@ func (c *Client) Account(ctx context.Context, addr common.Address) (*AccountWith
 		if err := json.Unmarshal([]byte(resp.Data), acc); err != nil {
 			return nil, err
 		}
-		log.Infof("Account: %s", resp.Data)
 		return acc, nil
 	}
 }
