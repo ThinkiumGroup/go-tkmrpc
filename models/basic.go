@@ -32,6 +32,7 @@ import (
 	"github.com/ThinkiumGroup/go-common/hexutil"
 	"github.com/ThinkiumGroup/go-common/math"
 	"github.com/ThinkiumGroup/go-common/trie"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -1303,6 +1304,23 @@ type BlockEMessage struct {
 	BlockPass   PubAndSigs
 }
 
+func (b *BlockEMessage) Logger(logger logrus.FieldLogger, defaultLevel ...logrus.Level) func(string, ...interface{}) {
+	if len(defaultLevel) > 0 && defaultLevel[0] >= logrus.DebugLevel {
+		return logger.Debugf
+	}
+	if b == nil || b.BlockHeader == nil || b.BlockHeader.Empty {
+		return logger.Errorf
+	}
+	if b.BlockBody != nil && len(b.BlockBody.Txs) > 0 {
+		return logger.Warnf
+	}
+	return logger.Infof
+}
+
+func (b *BlockEMessage) HasTx() bool {
+	return b != nil && b.BlockBody != nil && len(b.BlockBody.Txs) > 0
+}
+
 func (b *BlockEMessage) IsValid() bool {
 	if b == nil || b.BlockHeader == nil || b.BlockBody == nil {
 		return false
@@ -1337,16 +1355,11 @@ func (b *BlockEMessage) Hash() common.Hash {
 }
 
 func (b *BlockEMessage) MakeHdsProof(subId common.ChainID, height common.Height, proofChain *trie.ProofChain) ([]byte, error) {
-	if b == nil || b.BlockHeader == nil || b.BlockBody == nil || len(b.BlockBody.Hds) == 0 {
-		return nil, errors.New("no sub-chain headers found")
+	hs, err := MakeHdsSummary(b, subId, height)
+	if err != nil {
+		return nil, err
 	}
-	hs := &HeaderSummary{
-		Block:     b,
-		Summaries: b.BlockBody.Hds,
-		SubChain:  subId,
-		Height:    height,
-	}
-	_, hob, err := hs.HeaderProof(proofChain)
+	hob, err := hs.HeaderProof(proofChain)
 	return hob, err
 }
 

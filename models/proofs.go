@@ -26,6 +26,7 @@ import (
 type ConfirmingProof interface {
 	ConfirmedChain() common.ChainID
 	ConfirmedHeight() common.Height
+	ConfirmedHob() []byte
 	MainHeight() common.Height
 	MainHeader() *BlockHeader
 	MainBlock() *BlockEMessage
@@ -33,56 +34,85 @@ type ConfirmingProof interface {
 	// main-chain block which containing the confirmation.
 	// proofingHob: hash of confirmed block in sub-chain
 	// proofedHob: hash of main-chain block contains the confirmation
-	HeaderProof(proofs *trie.ProofChain) (proofingHob, proofedHob []byte, err error)
+	HeaderProof(proofs *trie.ProofChain) (proofedHob []byte, err error)
+	ShortHeaderProof(proofs *trie.ProofChain) error
 	String() string
 }
 
-type HeaderSummary struct {
+type HdsSummary struct {
 	Block     *BlockEMessage
 	Summaries []*BlockSummary
 	SubChain  common.ChainID
 	Height    common.Height
+	Index     int
 }
 
-func (s *HeaderSummary) ConfirmedChain() common.ChainID {
+func MakeHdsSummary(mainBlock *BlockEMessage, subId common.ChainID, height common.Height) (*HdsSummary, error) {
+	if mainBlock == nil || mainBlock.BlockHeader == nil ||
+		mainBlock.BlockBody == nil || len(mainBlock.BlockBody.Hds) == 0 {
+		return nil, errors.New("invalid main-chain block for HdsSummary")
+	}
+	idx := -1
+	for i, hds := range mainBlock.BlockBody.Hds {
+		if hds != nil && hds.GetChainID() == subId && hds.GetHeight() == height {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil, fmt.Errorf("no summary for ChainID:%d Height:%s found in %s", subId, &height, mainBlock.String())
+	}
+	return &HdsSummary{
+		Block:     mainBlock,
+		Summaries: mainBlock.BlockBody.Hds,
+		SubChain:  subId,
+		Height:    height,
+		Index:     idx,
+	}, nil
+}
+
+func (s *HdsSummary) ConfirmedChain() common.ChainID {
 	return s.SubChain
 }
 
-func (s *HeaderSummary) ConfirmedHeight() common.Height {
+func (s *HdsSummary) ConfirmedHeight() common.Height {
 	return s.Height
 }
 
-func (s *HeaderSummary) MainHeight() common.Height {
+func (s *HdsSummary) ConfirmedHob() []byte {
+	return s.Summaries[s.Index].Hob()
+}
+
+func (s *HdsSummary) MainHeight() common.Height {
 	if s == nil || s.Block == nil || s.Block.BlockHeader == nil {
 		return common.NilHeight
 	}
 	return s.Block.BlockHeader.Height
 }
 
-func (s *HeaderSummary) MainHeader() *BlockHeader {
+func (s *HdsSummary) MainHeader() *BlockHeader {
 	return s.Block.BlockHeader
 }
 
-func (s *HeaderSummary) MainBlock() *BlockEMessage {
+func (s *HdsSummary) MainBlock() *BlockEMessage {
 	return s.Block
 }
 
-func (s *HeaderSummary) String() string {
-	return fmt.Sprintf("HeaderSummary{%s SubChain:%d SubHeight:%d %s}",
+func (s *HdsSummary) String() string {
+	return fmt.Sprintf("HdsSummary{%s SubChain:%d SubHeight:%d %s}",
 		s.Block.String(), s.SubChain, s.Height, BlockSummarys(s.Summaries).Summary())
 }
 
-// HeaderProof Get the proof from a packaged HeaderSummary in the current block to the hash of this block
-func (s *HeaderSummary) HeaderProof(proofChain *trie.ProofChain) (proofingHob, proofedHob []byte, err error) {
+// HeaderProof Get the proof from a packaged HdsSummary in the current block to the hash of this block
+func (s *HdsSummary) HeaderProof(proofChain *trie.ProofChain) (proofedHob []byte, err error) {
 	if len(s.Summaries) == 0 {
-		return nil, nil, errors.New("no summary found")
+		return nil, errors.New("no summary found")
 	}
 	if len(s.Summaries) > 0 {
 		toBeProof := -1
 		for idx, sm := range s.Summaries {
 			if s.SubChain == sm.GetChainID() && s.Height == sm.GetHeight() {
 				toBeProof = idx
-				proofingHob = sm.Hob()
 				break
 			}
 		}
@@ -90,11 +120,11 @@ func (s *HeaderSummary) HeaderProof(proofChain *trie.ProofChain) (proofingHob, p
 			mProofs := common.NewMerkleProofs()
 			hdsRoot, err := common.ValuesMerkleTreeHash(s.Summaries, toBeProof, mProofs)
 			if !bytes.Equal(hdsRoot, s.Block.BlockHeader.HdsRoot.Bytes()) {
-				return nil, nil, fmt.Errorf("HeaderProof hds root miss match %s", s.Block.BlockHeader)
+				return nil, fmt.Errorf("HeaderProof hds root miss match %s", s.Block.BlockHeader)
 			}
 			nProof, err := s.Summaries[toBeProof].MakeProof()
 			if err != nil {
-				return nil, nil, fmt.Errorf("make proof at %d of summaries failed: %v", toBeProof, err)
+				return nil, fmt.Errorf("make proof at %d of summaries failed: %v", toBeProof, err)
 			}
 			// 1. hashOfHeader -> BlockSummary.Hash
 			*proofChain = append(*proofChain, nProof)
@@ -104,12 +134,17 @@ func (s *HeaderSummary) HeaderProof(proofChain *trie.ProofChain) (proofingHob, p
 			// 3. HdsRoot -> hash of the block which has BlockSummaries
 			hs, err := s.Block.BlockHeader.MakeProof(trie.ProofHeaderBase+BHHdsRoot, proofChain)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
-			return proofingHob, hs, nil
+			return hs, nil
 		}
 	}
-	return nil, nil, errors.New("header not included by summaries")
+	return nil, errors.New("header not included by summaries")
+}
+
+func (s *HdsSummary) ShortHeaderProof(proofChain *trie.ProofChain) error {
+	_, err := s.HeaderProof(proofChain)
+	return err
 }
 
 type ConfirmedSummary struct {
@@ -127,6 +162,10 @@ func (s *ConfirmedSummary) ConfirmedHeight() common.Height {
 	return s.Confirmed.Height
 }
 
+func (s *ConfirmedSummary) ConfirmedHob() []byte {
+	return s.Confirmed.Hob
+}
+
 func (s *ConfirmedSummary) MainHeight() common.Height {
 	if s == nil || s.Block == nil || s.Block.BlockHeader == nil {
 		return common.NilHeight
@@ -142,10 +181,10 @@ func (s *ConfirmedSummary) MainBlock() *BlockEMessage {
 	return s.Block
 }
 
-func (s *ConfirmedSummary) HeaderProof(proofs *trie.ProofChain) (proofingHob, proofedHob []byte, err error) {
+func (s *ConfirmedSummary) HeaderProof(proofs *trie.ProofChain) (proofedHob []byte, err error) {
 	pNode, err := s.Confirmed.ProofHob()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if proofs != nil {
 		*proofs = append(*proofs, pNode)
@@ -153,9 +192,32 @@ func (s *ConfirmedSummary) HeaderProof(proofs *trie.ProofChain) (proofingHob, pr
 			*proofs = append(*proofs, s.TrieProof...)
 		}
 	}
-	proofingHob = s.Confirmed.Hob
 	proofedHob, err = s.Block.BlockHeader.MakeProof(trie.ProofHeaderBase+BHConfirmedRoot, proofs)
 	return
+}
+
+func (s *ConfirmedSummary) ShortHeaderProof(proofs *trie.ProofChain) error {
+	pNode, err := s.Confirmed.ProofHob()
+	if err != nil {
+		return err
+	}
+	confirmProofs := make(trie.ProofChain, 0)
+	confirmProofs = append(confirmProofs, pNode)
+	if len(s.TrieProof) > 0 {
+		confirmProofs = append(confirmProofs, s.TrieProof...)
+	}
+	proofed, err := confirmProofs.Proof(common.BytesToHash(s.Confirmed.Hob))
+	if err != nil {
+		return err
+	}
+	if !s.Block.BlockHeader.ConfirmedRoot.SliceEqual(proofed) {
+		return fmt.Errorf("ShortHeaderProof confirmed root:%x miss match with proofed:%x, proofing:%x",
+			common.ForPrint(s.Block.BlockHeader.ConfirmedRoot), common.ForPrint(proofed), common.ForPrint(s.Confirmed.Hob))
+	}
+	if proofs != nil {
+		*proofs = append(*proofs, confirmProofs...)
+	}
+	return nil
 }
 
 func (s *ConfirmedSummary) String() string {
@@ -218,6 +280,16 @@ func (p *TxFinalProof) Verify() error {
 	if err != nil {
 		return fmt.Errorf("proof receipt failed: %v", err)
 	}
+
+	if p.Header.ConfirmedRoot.SliceEqual(proofed) {
+		// short-cut for proofing to Header.ConfirmedRoot
+		return nil
+	}
+	if p.Header.HashHistory.SliceEqual(proofed) {
+		// short-cut for proofing to Header.HistoryRoot
+		return nil
+	}
+
 	blockHash, err := p.Header.HashValue()
 	if err != nil {
 		return fmt.Errorf("hash block failed: %v", err)
