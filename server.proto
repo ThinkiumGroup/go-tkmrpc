@@ -9,7 +9,7 @@ service node {
     rpc GetAccount(RpcAddress) returns (RpcResponse);
     rpc GetTransactionByHash(RpcTXHash) returns (RpcResponse);
     rpc GetTxProof(RpcTXHash) returns (RpcResponse);
-    rpc GetTxFinalProof(RpcTXHash) returns (RpcResponseStream);
+    rpc GetTxFinalProof(RpcTxProofReq) returns (RpcResponseStream);
     rpc GetTransactions(RpcTxList) returns (RpcResponse);
     rpc SendTx(RpcTx) returns (RpcResponse);
     rpc GetStats(RpcStatsReq) returns (RpcResponse);
@@ -52,6 +52,12 @@ message RpcAddress {
 message RpcTXHash {
     uint32 chainid = 1;
     bytes hash = 2;
+}
+
+message RpcTxProofReq {
+    uint32 chainid = 1;
+    bytes hash = 2;
+    uint64 proofedMainHeight = 3;
 }
 
 message RpcTxList {

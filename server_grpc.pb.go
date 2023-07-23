@@ -62,7 +62,7 @@ type NodeClient interface {
 	GetAccount(ctx context.Context, in *RpcAddress, opts ...grpc.CallOption) (*RpcResponse, error)
 	GetTransactionByHash(ctx context.Context, in *RpcTXHash, opts ...grpc.CallOption) (*RpcResponse, error)
 	GetTxProof(ctx context.Context, in *RpcTXHash, opts ...grpc.CallOption) (*RpcResponse, error)
-	GetTxFinalProof(ctx context.Context, in *RpcTXHash, opts ...grpc.CallOption) (*RpcResponseStream, error)
+	GetTxFinalProof(ctx context.Context, in *RpcTxProofReq, opts ...grpc.CallOption) (*RpcResponseStream, error)
 	GetTransactions(ctx context.Context, in *RpcTxList, opts ...grpc.CallOption) (*RpcResponse, error)
 	SendTx(ctx context.Context, in *RpcTx, opts ...grpc.CallOption) (*RpcResponse, error)
 	GetStats(ctx context.Context, in *RpcStatsReq, opts ...grpc.CallOption) (*RpcResponse, error)
@@ -137,7 +137,7 @@ func (c *nodeClient) GetTxProof(ctx context.Context, in *RpcTXHash, opts ...grpc
 	return out, nil
 }
 
-func (c *nodeClient) GetTxFinalProof(ctx context.Context, in *RpcTXHash, opts ...grpc.CallOption) (*RpcResponseStream, error) {
+func (c *nodeClient) GetTxFinalProof(ctx context.Context, in *RpcTxProofReq, opts ...grpc.CallOption) (*RpcResponseStream, error) {
 	out := new(RpcResponseStream)
 	err := c.cc.Invoke(ctx, Node_GetTxFinalProof_FullMethodName, in, out, opts...)
 	if err != nil {
@@ -406,7 +406,7 @@ type NodeServer interface {
 	GetAccount(context.Context, *RpcAddress) (*RpcResponse, error)
 	GetTransactionByHash(context.Context, *RpcTXHash) (*RpcResponse, error)
 	GetTxProof(context.Context, *RpcTXHash) (*RpcResponse, error)
-	GetTxFinalProof(context.Context, *RpcTXHash) (*RpcResponseStream, error)
+	GetTxFinalProof(context.Context, *RpcTxProofReq) (*RpcResponseStream, error)
 	GetTransactions(context.Context, *RpcTxList) (*RpcResponse, error)
 	SendTx(context.Context, *RpcTx) (*RpcResponse, error)
 	GetStats(context.Context, *RpcStatsReq) (*RpcResponse, error)
@@ -454,7 +454,7 @@ func (UnimplementedNodeServer) GetTransactionByHash(context.Context, *RpcTXHash)
 func (UnimplementedNodeServer) GetTxProof(context.Context, *RpcTXHash) (*RpcResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetTxProof not implemented")
 }
-func (UnimplementedNodeServer) GetTxFinalProof(context.Context, *RpcTXHash) (*RpcResponseStream, error) {
+func (UnimplementedNodeServer) GetTxFinalProof(context.Context, *RpcTxProofReq) (*RpcResponseStream, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetTxFinalProof not implemented")
 }
 func (UnimplementedNodeServer) GetTransactions(context.Context, *RpcTxList) (*RpcResponse, error) {
@@ -627,7 +627,7 @@ func _Node_GetTxProof_Handler(srv interface{}, ctx context.Context, dec func(int
 }
 
 func _Node_GetTxFinalProof_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(RpcTXHash)
+	in := new(RpcTxProofReq)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
@@ -639,7 +639,7 @@ func _Node_GetTxFinalProof_Handler(srv interface{}, ctx context.Context, dec fun
 		FullMethod: Node_GetTxFinalProof_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodeServer).GetTxFinalProof(ctx, req.(*RpcTXHash))
+		return srv.(NodeServer).GetTxFinalProof(ctx, req.(*RpcTxProofReq))
 	}
 	return interceptor(ctx, in, info, handler)
 }
