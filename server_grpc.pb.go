@@ -23,6 +23,7 @@ const (
 	Node_GetAccount_FullMethodName                = "/tkmrpc.node/GetAccount"
 	Node_GetTransactionByHash_FullMethodName      = "/tkmrpc.node/GetTransactionByHash"
 	Node_GetTxProof_FullMethodName                = "/tkmrpc.node/GetTxProof"
+	Node_GetTxLocalProof_FullMethodName           = "/tkmrpc.node/GetTxLocalProof"
 	Node_GetTxFinalProof_FullMethodName           = "/tkmrpc.node/GetTxFinalProof"
 	Node_GetTransactions_FullMethodName           = "/tkmrpc.node/GetTransactions"
 	Node_SendTx_FullMethodName                    = "/tkmrpc.node/SendTx"
@@ -62,6 +63,7 @@ type NodeClient interface {
 	GetAccount(ctx context.Context, in *RpcAddress, opts ...grpc.CallOption) (*RpcResponse, error)
 	GetTransactionByHash(ctx context.Context, in *RpcTXHash, opts ...grpc.CallOption) (*RpcResponse, error)
 	GetTxProof(ctx context.Context, in *RpcTXHash, opts ...grpc.CallOption) (*RpcResponse, error)
+	GetTxLocalProof(ctx context.Context, in *RpcTXHash, opts ...grpc.CallOption) (*RpcResponseStream, error)
 	GetTxFinalProof(ctx context.Context, in *RpcTxProofReq, opts ...grpc.CallOption) (*RpcResponseStream, error)
 	GetTransactions(ctx context.Context, in *RpcTxList, opts ...grpc.CallOption) (*RpcResponse, error)
 	SendTx(ctx context.Context, in *RpcTx, opts ...grpc.CallOption) (*RpcResponse, error)
@@ -131,6 +133,15 @@ func (c *nodeClient) GetTransactionByHash(ctx context.Context, in *RpcTXHash, op
 func (c *nodeClient) GetTxProof(ctx context.Context, in *RpcTXHash, opts ...grpc.CallOption) (*RpcResponse, error) {
 	out := new(RpcResponse)
 	err := c.cc.Invoke(ctx, Node_GetTxProof_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeClient) GetTxLocalProof(ctx context.Context, in *RpcTXHash, opts ...grpc.CallOption) (*RpcResponseStream, error) {
+	out := new(RpcResponseStream)
+	err := c.cc.Invoke(ctx, Node_GetTxLocalProof_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -406,6 +417,7 @@ type NodeServer interface {
 	GetAccount(context.Context, *RpcAddress) (*RpcResponse, error)
 	GetTransactionByHash(context.Context, *RpcTXHash) (*RpcResponse, error)
 	GetTxProof(context.Context, *RpcTXHash) (*RpcResponse, error)
+	GetTxLocalProof(context.Context, *RpcTXHash) (*RpcResponseStream, error)
 	GetTxFinalProof(context.Context, *RpcTxProofReq) (*RpcResponseStream, error)
 	GetTransactions(context.Context, *RpcTxList) (*RpcResponse, error)
 	SendTx(context.Context, *RpcTx) (*RpcResponse, error)
@@ -453,6 +465,9 @@ func (UnimplementedNodeServer) GetTransactionByHash(context.Context, *RpcTXHash)
 }
 func (UnimplementedNodeServer) GetTxProof(context.Context, *RpcTXHash) (*RpcResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetTxProof not implemented")
+}
+func (UnimplementedNodeServer) GetTxLocalProof(context.Context, *RpcTXHash) (*RpcResponseStream, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetTxLocalProof not implemented")
 }
 func (UnimplementedNodeServer) GetTxFinalProof(context.Context, *RpcTxProofReq) (*RpcResponseStream, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetTxFinalProof not implemented")
@@ -622,6 +637,24 @@ func _Node_GetTxProof_Handler(srv interface{}, ctx context.Context, dec func(int
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(NodeServer).GetTxProof(ctx, req.(*RpcTXHash))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Node_GetTxLocalProof_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RpcTXHash)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeServer).GetTxLocalProof(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Node_GetTxLocalProof_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeServer).GetTxLocalProof(ctx, req.(*RpcTXHash))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1170,6 +1203,10 @@ var Node_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetTxProof",
 			Handler:    _Node_GetTxProof_Handler,
+		},
+		{
+			MethodName: "GetTxLocalProof",
+			Handler:    _Node_GetTxLocalProof_Handler,
 		},
 		{
 			MethodName: "GetTxFinalProof",

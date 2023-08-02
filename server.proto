@@ -9,6 +9,7 @@ service node {
     rpc GetAccount(RpcAddress) returns (RpcResponse);
     rpc GetTransactionByHash(RpcTXHash) returns (RpcResponse);
     rpc GetTxProof(RpcTXHash) returns (RpcResponse);
+    rpc GetTxLocalProof(RpcTXHash) returns (RpcResponseStream);
     rpc GetTxFinalProof(RpcTxProofReq) returns (RpcResponseStream);
     rpc GetTransactions(RpcTxList) returns (RpcResponse);
     rpc SendTx(RpcTx) returns (RpcResponse);
