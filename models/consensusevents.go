@@ -323,7 +323,7 @@ func (a *AttendanceRecord) Proposed(commId common.CommID, commSize int) int {
 		return 0
 	}
 	count := 0
-	for turn := int(commId); turn < common.BlocksInEpoch; turn += commSize {
+	for turn := int(commId); turn < int(common.BlocksInEpoch); turn += commSize {
 		bit := a.Attendance.Bit(turn)
 		if bit == 1 {
 			count++

@@ -1,5 +1,5 @@
-github.com/ThinkiumGroup/go-common v1.6.5 h1:rG8PX8OqzP9Q828tseFtvaPxMoC/8eT2FaOCpqIcJRw=
-github.com/ThinkiumGroup/go-common v1.6.5/go.mod h1:Ce5fEXE3U3U6SX7u1dEUmB1mvoO7Fvb5U541gGhTueU=
+github.com/ThinkiumGroup/go-common v1.7.0 h1:ATlp/Wzv1dib1AFylFZAbdtKJFwvzWD2jitICIeXlrA=
+github.com/ThinkiumGroup/go-common v1.7.0/go.mod h1:Ce5fEXE3U3U6SX7u1dEUmB1mvoO7Fvb5U541gGhTueU=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

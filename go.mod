@@ -3,7 +3,7 @@ module github.com/ThinkiumGroup/go-tkmrpc
 go 1.18
 
 require (
-	github.com/ThinkiumGroup/go-common v1.6.5
+	github.com/ThinkiumGroup/go-common v1.7.0
 	github.com/sirupsen/logrus v1.9.0
 	github.com/stephenfire/go-rtl v1.1.1
 	google.golang.org/grpc v1.56.1
