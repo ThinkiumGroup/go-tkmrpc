@@ -264,9 +264,12 @@ func (p *TxFinalProof) InfoString(level common.IndentLevel) string {
 		base)
 }
 
-func (p *TxFinalProof) Verify() error {
+// use the main chain block to prove the transaction on any chain
+// Hash(Receipt) -> Hash(Sub.BlockA) -> Hash(Sub.BlockX) -> Main.BlockB.ConfirmedRoot or Hash(Main.BlockB), or:
+// Hash(Receipt) -> Hash(Main.BlockA) -> Main.BlockB.HashHistory or Hash(Main.BlockB)
+func (p *TxFinalProof) FinalVerify() error {
 	if !p.Receipt.Success() {
-		return errors.New("tx running failed")
+		return errors.New("tx application failed")
 	}
 	txHash := p.Tx.Hash()
 	if txHash != p.Receipt.TxHash {
@@ -287,6 +290,40 @@ func (p *TxFinalProof) Verify() error {
 	}
 	if p.Header.HashHistory.SliceEqual(proofed) {
 		// short-cut for proofing to Header.HistoryRoot
+		return nil
+	}
+
+	blockHash, err := p.Header.HashValue()
+	if err != nil {
+		return fmt.Errorf("hash block failed: %v", err)
+	}
+	if !bytes.Equal(proofed, blockHash) {
+		return fmt.Errorf("proof failed, block hash want: %x, got: %x",
+			common.ForPrint(blockHash), common.ForPrint(proofed))
+	}
+	return nil
+}
+
+// prove the transaction receipt using the block containing the transaction
+// Hash(Receipt) -> block.ReceiptRoot or Hash(block)
+func (p *TxFinalProof) LocalVerify() error {
+	if !p.Receipt.Success() {
+		return errors.New("tx application failed")
+	}
+	txHash := p.Tx.Hash()
+	if txHash != p.Receipt.TxHash {
+		return fmt.Errorf("tx hash:%x not match with receipt.txHash:%x", txHash[:], p.Receipt.TxHash[:])
+	}
+	rcptHash, err := p.Receipt.HashValue()
+	if err != nil {
+		return fmt.Errorf("hash receipt failed: %v", err)
+	}
+	proofed, err := p.ReceiptProof.Proof(common.BytesToHash(rcptHash))
+	if err != nil {
+		return fmt.Errorf("proof receipt failed: %v", err)
+	}
+
+	if p.Header.ReceiptRoot.SliceEqual(proofed) {
 		return nil
 	}
 
