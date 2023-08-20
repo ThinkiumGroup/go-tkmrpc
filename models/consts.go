@@ -84,8 +84,9 @@ const (
 	RewardReqVersion = RewardReqV1
 
 	ReceiptV0      = 0
-	ReceiptV1      = 1
-	ReceiptVersion = ReceiptV1
+	ReceiptV1      = 1 // use RLP to serialize the Receipt object
+	ReceiptV2      = 2 // use the merkle root of Logs to calculate the hash value of Receipt
+	ReceiptVersion = ReceiptV2
 )
 
 // Required Reserve related

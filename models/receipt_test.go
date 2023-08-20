@@ -118,5 +118,5 @@ func TestReceiptRLP(t *testing.T) {
 		}},
 	}
 	_testOneReceiptRLP(receipt, t)
-	_testOneReceiptRLP(receipt.FormatForRLP(), t)
+	_testOneReceiptRLP(receipt._formatForRLP(), t)
 }

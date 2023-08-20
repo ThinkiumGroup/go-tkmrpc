@@ -71,6 +71,18 @@ type Log struct {
 	BlockHash *common.Hash `json:"blockHash"`
 }
 
+func (l *Log) HashValue() ([]byte, error) {
+	if l == nil {
+		return common.CopyBytes(common.NilHashSlice), nil
+	}
+	rlpobj := l._formatForRLP()
+	hasher := common.SystemHashProvider.Hasher()
+	if err := rlp.Encode(hasher, rlpobj); err != nil {
+		return nil, fmt.Errorf("rlp encode Log failed: %v", err)
+	}
+	return hasher.Sum(nil), nil
+}
+
 func (l *Log) String() string {
 	if l == nil {
 		return "Log<nil>"
@@ -142,7 +154,7 @@ func (l *Log) _clone(canonical bool) *Log {
 	return o
 }
 
-func (l *Log) FormatForRLP() *Log {
+func (l *Log) _formatForRLP() *Log {
 	if l == nil {
 		return nil
 	}
@@ -167,6 +179,44 @@ func (ls Logs) Clone() Logs {
 		rs[i] = l.Clone()
 	}
 	return rs
+}
+
+func (ls Logs) _hashList() ([][]byte, error) {
+	var list [][]byte
+	for i, l := range ls {
+		hl, err := common.HashObject(l)
+		if err != nil {
+			return nil, fmt.Errorf("hash of logs at index %d failed: %w", i, err)
+		}
+		list = append(list, hl)
+	}
+	return list, nil
+}
+
+func (ls Logs) MerkleRoot(toBeProof int, proofs *trie.ProofChain) ([]byte, error) {
+	switch len(ls) {
+	case 0:
+		return common.CopyBytes(common.EmptyHash[:]), nil
+	case 1:
+		return ls[0].HashValue()
+	default:
+		list, err := ls._hashList()
+		if err != nil {
+			return nil, err
+		}
+		var mps *common.MerkleProofs
+		if toBeProof >= 0 && proofs != nil {
+			mps = common.NewMerkleProofs()
+		}
+		root, err := common.MerkleHash(list, toBeProof, mps)
+		if err != nil {
+			return root, err
+		}
+		if toBeProof >= 0 && proofs != nil {
+			*proofs = append(*proofs, trie.NewMerkleOnlyProof(trie.ProofMerkleOnly, mps))
+		}
+		return root, nil
+	}
 }
 
 type logMarshaling struct {
@@ -265,6 +315,34 @@ type receiptV00 struct {
 	GasBonuses        []*Bonus
 }
 
+type receiptV1 struct {
+	PostState         []byte
+	Status            uint64
+	CumulativeGasUsed uint64
+	Logs              []*Log
+	TxHash            common.Hash
+	ContractAddress   *common.Address
+	GasUsed           uint64
+	Out               []byte
+	Error             string
+	GasBonuses        []*Bonus
+	Version           uint16
+}
+
+type receiptV2HashObj struct {
+	PostState         []byte
+	Status            uint64
+	CumulativeGasUsed uint64
+	LogsRoot          common.Hash
+	TxHash            common.Hash
+	ContractAddress   *common.Address
+	GasUsed           uint64
+	Out               []byte
+	Error             string
+	GasBonuses        []*Bonus
+	Version           uint16
+}
+
 // type receiptMarshaling struct {
 // 	PostState         hexutil.Bytes
 // 	Status            hexutil.Uint64
@@ -281,15 +359,8 @@ func (r *Receipt) HashValue() ([]byte, error) {
 	if r == nil {
 		return common.EncodeAndHash(r)
 	}
-	if r.Version > ReceiptV0 {
-		// use RLP to encode the Receipt and then calculate hash value
-		// for being compatiable with proofing receipt in block to the lightclient on other EVM chains (BSC for example)
-		hasher := common.SystemHashProvider.Hasher()
-		if err := rlp.Encode(hasher, r.FormatForRLP()); err != nil {
-			return nil, fmt.Errorf("rlp encode receipt failed: %v", err)
-		}
-		return hasher.Sum(nil), nil
-	} else { // r.Version == ReceiptV0, use RTL
+	switch r.Version {
+	case ReceiptV0:
 		if len(r.GasBonuses) == 0 {
 			return common.EncodeAndHash(&receiptV0{
 				PostState:         r.PostState,
@@ -316,7 +387,52 @@ func (r *Receipt) HashValue() ([]byte, error) {
 				GasBonuses:        r.GasBonuses,
 			})
 		}
+	case ReceiptV1:
+		// use RLP to encode the Receipt and then calculate hash value
+		// for being compatiable with proofing receipt in block to the lightclient on other EVM chains (BSC for example)
+		hasher := common.SystemHashProvider.Hasher()
+		if err := rlp.Encode(hasher, r._formatForRLP()); err != nil {
+			return nil, fmt.Errorf("rlp encode receipt failed: %v", err)
+		}
+		return hasher.Sum(nil), nil
+	case ReceiptV2:
+		return r._hashValueV2()
+	default:
+		return nil, errors.New("unknown receipt version")
 	}
+}
+
+func (r *Receipt) _hashValueV2() ([]byte, error) {
+	// RLP with Logs Merkel Root
+	if r == nil {
+		return common.CopyBytes(common.NilHashSlice), nil
+	}
+	logsRoot, err := Logs(r.Logs).MerkleRoot(-1, nil)
+	if err != nil {
+		return nil, fmt.Errorf("merkle root for logs failed: %w", err)
+	}
+	bonuses := make([]*Bonus, 0, len(r.GasBonuses))
+	for _, b := range r.GasBonuses {
+		bonuses = append(bonuses, b.FormatForRLP())
+	}
+	obj := &receiptV2HashObj{
+		PostState:         common.BytesForRLP(r.PostState),
+		Status:            r.Status,
+		CumulativeGasUsed: r.CumulativeGasUsed,
+		LogsRoot:          common.BytesToHash(logsRoot),
+		TxHash:            r.TxHash,
+		ContractAddress:   r.ContractAddress.ForRLP(),
+		GasUsed:           r.GasUsed,
+		Out:               common.BytesForRLP(r.Out),
+		Error:             r.Error,
+		GasBonuses:        bonuses,
+		Version:           r.Version,
+	}
+	hasher := common.SystemHashProvider.Hasher()
+	if err := rlp.Encode(hasher, obj); err != nil {
+		return nil, fmt.Errorf("rlp encode receipt v2 failed: %w", err)
+	}
+	return hasher.Sum(nil), nil
 }
 
 func (r *Receipt) Clone() *Receipt {
@@ -338,13 +454,13 @@ func (r *Receipt) Clone() *Receipt {
 	}
 }
 
-func (r *Receipt) FormatForRLP() *Receipt {
+func (r *Receipt) _formatForRLP() *Receipt {
 	if r == nil {
 		return nil
 	}
 	logs := make([]*Log, 0, len(r.Logs))
 	for _, lo := range r.Logs {
-		logs = append(logs, lo.FormatForRLP())
+		logs = append(logs, lo._formatForRLP())
 	}
 	bonuses := make([]*Bonus, 0, len(r.GasBonuses))
 	for _, b := range r.GasBonuses {
