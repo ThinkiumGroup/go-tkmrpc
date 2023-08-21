@@ -3,6 +3,7 @@ module github.com/ThinkiumGroup/go-tkmrpc
 go 1.18
 
 require (
+	github.com/ThinkiumGroup/go-cipher v1.1.1
 	github.com/ThinkiumGroup/go-common v1.7.0
 	github.com/sirupsen/logrus v1.9.0
 	github.com/stephenfire/go-rtl v1.1.1
@@ -11,6 +12,7 @@ require (
 )
 
 require (
+	github.com/ThinkiumGroup/go-ecrypto v1.3.0 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
 	github.com/hashicorp/golang-lru v0.5.5-0.20210104140557-80c98217689d // indirect
