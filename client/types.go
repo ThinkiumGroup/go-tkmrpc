@@ -208,6 +208,7 @@ type (
 
 	Confirmeds struct {
 		At   common.Height
+		Root []byte
 		Data models.ChainConfirmeds
 	}
 )
@@ -229,6 +230,27 @@ func (r *TransactionReceipt) Reset() {
 	r.GasFee = ""
 	r.PostRoot = nil
 	r.Error = ""
+}
+
+func (r *TransactionReceipt) Parse(outputParser func(out []byte) error, logParsers ...func(logs []*models.Log) error) error {
+	if r == nil {
+		return errors.New("nil receipt")
+	}
+	fmt.Println(r.InfoString(0))
+	if r.Status == models.ReceiptStatusSuccessful {
+		if outputParser != nil {
+			if err := outputParser(r.Out); err != nil {
+				return err
+			}
+		}
+		if len(logParsers) > 0 && logParsers[0] != nil {
+			if err := logParsers[0](r.Logs); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("%s", r.Error)
 }
 
 func (r *TransactionReceipt) PartReceipt(tx *models.Transaction, pas *models.PubAndSig, rpt *models.Receipt) *TransactionReceipt {
@@ -323,7 +345,17 @@ func (r *TransactionReceipt) InfoString(level common.IndentLevel) string {
 	if r == nil {
 		return "RPT<nil>"
 	}
-	indent := (level + 1).IndentString()
+	next := level + 1
+	indent := next.IndentString()
+	outputStr := fmt.Sprintf("\n%sOut: %x", indent, []byte(r.Out))
+	if r.Transaction != nil && models.SysContractLogger.Has(r.Transaction.To) && len(r.Transaction.Input) > 0 {
+		outputStr += fmt.Sprintf("\n%sreturn: %s", indent,
+			models.SysContractLogger.ReturnsString(*(r.Transaction.To), r.Transaction.Input, r.Out))
+	}
+	errStr := fmt.Sprintf("\n%sError: %s", indent, r.Error)
+	if revertMsg := r.Revert(); len(revertMsg) > 0 {
+		errStr += fmt.Sprintf(" (%s)", r.RevertError().Error())
+	}
 	txparamStr := ""
 	if len(r.Param) > 0 {
 		txparam := new(models.TxParam)
@@ -336,30 +368,30 @@ func (r *TransactionReceipt) InfoString(level common.IndentLevel) string {
 		"\n%sSignature: %s"+
 		"\n%sPostState: %s"+
 		"\n%sStatus: %d"+
-		"\n%sLogs: %v"+
+		"\n%sLogs: %s"+
 		"\n%sGasBonuses: %s"+
 		"\n%sTxHash: %x"+
 		"\n%sContractAddress: %x"+
-		"\n%sOut: %x"+
+		"%s"+
 		"\n%sHeight: %s"+
 		"\n%sGasUsed: %d"+
 		"\n%sGasFee: %s"+
-		"\n%sError: %s"+
+		"%s"+
 		"\n%sParam: %x%s"+
 		"\n%s}",
 		indent, r.Transaction.InfoString(level+1),
 		indent, r.Sig.InfoString(level+1),
 		indent, string(r.PostState),
 		indent, r.Status,
-		indent, r.Logs,
-		indent, (level + 1).InfoString(r.GasBonuses),
+		indent, next.InfoString(r.Logs),
+		indent, next.InfoString(r.GasBonuses),
 		indent, r.TxHash[:],
 		indent, r.ContractAddress[:],
-		indent, []byte(r.Out),
+		outputStr,
 		indent, &(r.Height),
 		indent, r.GasUsed,
 		indent, math.BigStringForPrint(r.GasFee),
-		indent, r.Error,
+		errStr,
 		indent, r.Param, txparamStr,
 		base)
 }
@@ -804,9 +836,11 @@ func (c *Confirmeds) InfoString(level common.IndentLevel) string {
 	indent := nextLevel.IndentString()
 	return fmt.Sprintf("Confirmeds{"+
 		"\n%sAt: %s"+
+		"\n%sRoot: %x"+
 		"\n%sData: %s"+
 		"\n%s}",
 		indent, &(c.At),
+		indent, common.ForPrint(c.Root),
 		indent, nextLevel.InfoString(c.Data),
 		base)
 }
