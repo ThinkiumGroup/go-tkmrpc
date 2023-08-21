@@ -53,6 +53,8 @@ const (
 	Node_ListRRChanges_FullMethodName             = "/tkmrpc.node/ListRRChanges"
 	Node_GetConfirmeds_FullMethodName             = "/tkmrpc.node/GetConfirmeds"
 	Node_RebootMainChain_FullMethodName           = "/tkmrpc.node/RebootMainChain"
+	Node_ListBridgeSessionsToAt_FullMethodName    = "/tkmrpc.node/ListBridgeSessionsToAt"
+	Node_ListRRInfos_FullMethodName               = "/tkmrpc.node/ListRRInfos"
 )
 
 // NodeClient is the client API for Node service.
@@ -93,6 +95,8 @@ type NodeClient interface {
 	ListRRChanges(ctx context.Context, in *RpcRRChangesReq, opts ...grpc.CallOption) (*RpcResponseStream, error)
 	GetConfirmeds(ctx context.Context, in *RpcBlockHeight, opts ...grpc.CallOption) (*RpcResponseStream, error)
 	RebootMainChain(ctx context.Context, in *RpcReboot, opts ...grpc.CallOption) (*RpcResponse, error)
+	ListBridgeSessionsToAt(ctx context.Context, in *RpcBridgeToAt, opts ...grpc.CallOption) (*RpcResponseStream, error)
+	ListRRInfos(ctx context.Context, in *RpcBlockTxsReq, opts ...grpc.CallOption) (*RpcResponseStream, error)
 }
 
 type nodeClient struct {
@@ -409,6 +413,24 @@ func (c *nodeClient) RebootMainChain(ctx context.Context, in *RpcReboot, opts ..
 	return out, nil
 }
 
+func (c *nodeClient) ListBridgeSessionsToAt(ctx context.Context, in *RpcBridgeToAt, opts ...grpc.CallOption) (*RpcResponseStream, error) {
+	out := new(RpcResponseStream)
+	err := c.cc.Invoke(ctx, Node_ListBridgeSessionsToAt_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodeClient) ListRRInfos(ctx context.Context, in *RpcBlockTxsReq, opts ...grpc.CallOption) (*RpcResponseStream, error) {
+	out := new(RpcResponseStream)
+	err := c.cc.Invoke(ctx, Node_ListRRInfos_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // NodeServer is the server API for Node service.
 // All implementations must embed UnimplementedNodeServer
 // for forward compatibility
@@ -447,6 +469,8 @@ type NodeServer interface {
 	ListRRChanges(context.Context, *RpcRRChangesReq) (*RpcResponseStream, error)
 	GetConfirmeds(context.Context, *RpcBlockHeight) (*RpcResponseStream, error)
 	RebootMainChain(context.Context, *RpcReboot) (*RpcResponse, error)
+	ListBridgeSessionsToAt(context.Context, *RpcBridgeToAt) (*RpcResponseStream, error)
+	ListRRInfos(context.Context, *RpcBlockTxsReq) (*RpcResponseStream, error)
 	mustEmbedUnimplementedNodeServer()
 }
 
@@ -555,6 +579,12 @@ func (UnimplementedNodeServer) GetConfirmeds(context.Context, *RpcBlockHeight) (
 }
 func (UnimplementedNodeServer) RebootMainChain(context.Context, *RpcReboot) (*RpcResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method RebootMainChain not implemented")
+}
+func (UnimplementedNodeServer) ListBridgeSessionsToAt(context.Context, *RpcBridgeToAt) (*RpcResponseStream, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListBridgeSessionsToAt not implemented")
+}
+func (UnimplementedNodeServer) ListRRInfos(context.Context, *RpcBlockTxsReq) (*RpcResponseStream, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListRRInfos not implemented")
 }
 func (UnimplementedNodeServer) mustEmbedUnimplementedNodeServer() {}
 
@@ -1181,6 +1211,42 @@ func _Node_RebootMainChain_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _Node_ListBridgeSessionsToAt_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RpcBridgeToAt)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeServer).ListBridgeSessionsToAt(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Node_ListBridgeSessionsToAt_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeServer).ListBridgeSessionsToAt(ctx, req.(*RpcBridgeToAt))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _Node_ListRRInfos_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RpcBlockTxsReq)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodeServer).ListRRInfos(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: Node_ListRRInfos_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodeServer).ListRRInfos(ctx, req.(*RpcBlockTxsReq))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // Node_ServiceDesc is the grpc.ServiceDesc for Node service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1323,6 +1389,14 @@ var Node_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "RebootMainChain",
 			Handler:    _Node_RebootMainChain_Handler,
+		},
+		{
+			MethodName: "ListBridgeSessionsToAt",
+			Handler:    _Node_ListBridgeSessionsToAt_Handler,
+		},
+		{
+			MethodName: "ListRRInfos",
+			Handler:    _Node_ListRRInfos_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

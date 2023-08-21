@@ -37,7 +37,6 @@ import (
 
 var (
 	ErrDuplicatedMsg = errors.New("duplicated message")
-	ErrNotAudited    = errors.New("still need audit")
 )
 
 type BlockHeighter interface {
@@ -553,6 +552,7 @@ func (tx Transaction) DeprecatedHash() ([]byte, error) {
 	return common.Hash256s([]byte(p))
 }
 
+// Deprecated
 func TransactionStringForHash(chainid common.ChainID, from *common.Address, to *common.Address, nonce uint64,
 	uselocal bool, val *big.Int, input []byte, extra []byte) string {
 	t := ""
@@ -927,30 +927,51 @@ func (ss BlockSummarys) Swap(i, j int) {
 }
 
 func (ss BlockSummarys) Less(i, j int) bool {
-	if less, needCompare := common.PointerSliceLess(ss, i, j); !needCompare {
-		return less
+	return ss[i].Compare(ss[j]) < 0
+}
+
+func (ss BlockSummarys) _equal(os BlockSummarys, equaler func(a, b *BlockSummary) bool) bool {
+	if ss == nil && os == nil {
+		return true
 	}
-	if ss[i].Header.Equal(ss[j].Header) {
+	if ss == nil || os == nil {
 		return false
 	}
-	if ss[i].Header.ChainID == ss[j].Header.ChainID {
-		return ss[i].Header.Height.Compare(ss[j].Header.Height) < 0
+	if len(ss) != len(os) {
+		return false
 	}
-	return ss[i].Header.ChainID < ss[j].Header.ChainID
+	for i, b := range ss {
+		if !equaler(b, os[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (ss BlockSummarys) Equal(os BlockSummarys) bool {
+	return ss._equal(os, func(a, b *BlockSummary) bool {
+		return a.Equal(b)
+	})
+}
+
+func (ss BlockSummarys) FastEqual(os BlockSummarys) bool {
+	return ss._equal(os, func(a, b *BlockSummary) bool {
+		return a.FastEqual(b)
+	})
 }
 
 func (ss BlockSummarys) Summary() string {
 	if ss == nil {
-		return "Summaries<nil>"
+		return "<nil>"
 	}
 	if len(ss) == 0 {
 		return "Summaries[]"
 	}
 	buf := new(bytes.Buffer)
-	buf.WriteString("Summaries[")
+	buf.WriteString(fmt.Sprintf("Summaries(%d)[", len(ss)))
 	for i, summary := range ss {
 		if i > 0 {
-			buf.WriteString(", ")
+			buf.WriteByte(' ')
 		}
 		buf.WriteString(summary.Summary())
 	}
@@ -958,22 +979,9 @@ func (ss BlockSummarys) Summary() string {
 	return buf.String()
 }
 
-// type blockSummaryShouldBe struct {
-// 	Header       *BlockHeader
-// 	HistoryProof trie.ProofChain
-// 	NextComm     *EpochCommittee
-// 	AuditorPass  AuditorPass
-// 	Version      uint16
-// }
-
 type BlockSummary struct {
-	// TODO: data items reserved for compatibility with old data, use header instead.
-	//  ChainId must be 0, Height must be 0, BlockHash must be nil
-	// Deprecated
-	ChainId common.ChainID
-	// Deprecated
-	Height common.Height
-	// Deprecated
+	ChainId   common.ChainID
+	Height    common.Height
 	BlockHash *common.Hash
 	// since v1.5.0, the election result of the next committee whill be packaged together.
 	// Because only the data and comm node will receive the report and record the next committee
@@ -987,21 +995,31 @@ type BlockSummary struct {
 	Version uint16
 	// since v2.11.0, record the continuity from the last confirmed block height on the sub-chain
 	// to the current confirmed block
-	HistoryProof trie.ProofChain
+	// since v3.1.0, should be nil
+	// since v3.2.6, used for proof NextComm.Hash() -> BlockHash
+	Proofs trie.ProofChain
 	// since v2.11.3, the size of a header is about 20 hashes, and one proof of a header content
 	// is 6 hashes in the new version, so when there are more than 3 proofs (NextCommProof,
 	// HisRootProof, ParentProof), use the header to replace the 3 sets of values and the proofs
 	// is more cost-effective
+	// since v3.2.1, deprecated
+	// since v3.2.6, if sub-chain is the REWARD chain, use Header instead of (ChainID,Height,BlockHash)
+	// 	for RREra/RRRoot/RRNextRoot
 	Header *BlockHeader
 	// since v2.11.0, record the audit result of the current block
+	// since v3.1.0, should be nil
+	// Deprecated
 	AuditorPass AuditorPass
 }
 
 func (s *BlockSummary) HistoryProofing() common.Height {
-	if s == nil || s.HistoryProof == nil {
+	if s == nil || s.Proofs == nil {
 		return common.NilHeight
 	}
-	return common.Height(s.HistoryProof.BigKey().Uint64())
+	if s.Version >= SummaryVersion5 {
+		return common.NilHeight
+	}
+	return common.Height(s.Proofs.BigKey().Uint64())
 }
 
 func (s *BlockSummary) InfoString(level common.IndentLevel) string {
@@ -1012,19 +1030,15 @@ func (s *BlockSummary) InfoString(level common.IndentLevel) string {
 	next := level + 1
 	// proofingHeight := s.HistoryProofing()
 	return fmt.Sprintf("Summary{"+
-		"\n\t%sChainID: %d"+
-		"\n\t%sHeight: %s"+
-		"\n\t%sBlockHash: %x"+
+		"\n\t%sChainID:%d Height:%s HoB:%x"+
 		"\n\t%sHistoryProof: %s"+
 		"\n\t%sHeader: %s"+
 		"\n\t%sNextComm: %s"+
 		"\n\t%sAuditorPass: %s"+
 		"\n\t%sVersion: %d"+
 		"\n%s}",
-		base, s.ChainId,
-		base, &(s.Height),
-		base, common.ForPrint(s.BlockHash, 0, -1),
-		base, HistoryProof(s.HistoryProof).InfoString(next),
+		base, s.ChainId, &(s.Height), common.ForPrint(s.BlockHash, 0, -1),
+		base, HistoryProof(s.Proofs).InfoString(next),
 		base, s.Header.InfoString(next),
 		base, s.NextComm.InfoString(next),
 		base, s.AuditorPass.InfoString(next),
@@ -1034,6 +1048,68 @@ func (s *BlockSummary) InfoString(level common.IndentLevel) string {
 
 func (s *BlockSummary) IsValid() bool {
 	return s != nil && (s.BlockHash != nil || s.Header != nil)
+}
+
+func (s *BlockSummary) HeaderEqual(header *BlockHeader) bool {
+	if s.Header != nil {
+		return s.Header.Equal(header)
+	}
+	if s.ChainId == header.ChainID && s.Height == header.Height {
+		hob := header.Hash()
+		return s.BlockHash.Equal(&hob)
+	} else {
+		return false
+	}
+}
+
+func (s *BlockSummary) FastEqual(o *BlockSummary) bool {
+	if s == o {
+		return true
+	}
+	if s == nil || o == nil {
+		return false
+	}
+	return s.ChainId == o.ChainId && s.Height == o.Height && s.BlockHash.Equal(o.BlockHash) && s.Header.Equal(o.Header)
+}
+
+func (s *BlockSummary) Equal(o *BlockSummary) bool {
+	if s == o {
+		return true
+	}
+	if s == nil || o == nil {
+		return false
+	}
+	return s.ChainId == o.ChainId && s.Height == o.Height && s.BlockHash.Equal(o.BlockHash) &&
+		s.NextComm.Equal(o.NextComm) && s.Version == o.Version && s.Proofs.Equal(o.Proofs) &&
+		s.Header.Equal(o.Header) && s.AuditorPass.Equal(o.AuditorPass)
+}
+
+func (s *BlockSummary) Compare(o *BlockSummary) int {
+	if s == o {
+		return 0
+	}
+	if s == nil {
+		return -1
+	}
+	if o == nil {
+		return 1
+	}
+	if !s.IsValid() || !o.IsValid() {
+		if !s.IsValid() && !o.IsValid() {
+			return 0
+		}
+		if !s.IsValid() {
+			return -1
+		}
+		return 1
+	}
+	if cmp := s.GetChainID().Compare(o.GetChainID()); cmp != 0 {
+		return cmp
+	}
+	if cmp := s.GetHeight().Compare(o.GetHeight()); cmp != 0 {
+		return cmp
+	}
+	return bytes.Compare(s.GetBlockHash().Bytes(), o.GetBlockHash().Bytes())
 }
 
 func (s *BlockSummary) GetChainID() common.ChainID {
@@ -1050,26 +1126,15 @@ func (s *BlockSummary) GetHeight() common.Height {
 	return s.Height
 }
 
-func (s *BlockSummary) FromReport(rpt *BlockReport) (*BlockSummary, error) {
-	if rpt == nil {
-		return nil, nil
+func (s *BlockSummary) GetBlockHash() common.Hash {
+	if s.Header != nil {
+		return s.Header.Hash()
 	}
-	if rpt.BlockHeader == nil {
-		return nil, errors.New("nil block header in report")
+	hob := common.Hash{}
+	if s.BlockHash != nil {
+		hob = *(s.BlockHash)
 	}
-	r := s
-	if r == nil {
-		r = new(BlockSummary)
-	}
-	r.ChainId = 0
-	r.Height = 0
-	r.BlockHash = nil
-	r.Version = SummaryVersion
-	r.NextComm = rpt.NextComm.Clone()
-	r.HistoryProof = rpt.HistoryProof.Clone()
-	r.Header = rpt.BlockHeader.Clone()
-	r.AuditorPass = rpt.AuditPass.Clone()
-	return r, nil
+	return hob
 }
 
 func (s *BlockSummary) Summary() string {
@@ -1084,56 +1149,10 @@ func (s *BlockSummary) String() string {
 		return "Summary<nil>"
 	}
 	proofing := s.HistoryProofing()
-	hob, _ := s.Header.HashValue()
-	return fmt.Sprintf("Summary.%d{ChainID:%d Height:%d Hob:%x NextComm:%s HistoryProofing:%s"+
-		" AuditorPass:%d}", s.Version, s.Header.ChainID, s.Header.Height, common.ForPrint(hob),
-		s.NextComm.String(), &proofing, len(s.AuditorPass))
-}
-
-func (s *BlockSummary) Verify(blockVersion uint16, lastHeight common.Height, lastHob []byte, lastMatchedComm *EpochCommittee,
-	auditorIds map[common.NodeID]struct{}) error {
-	if s == nil || s.Header == nil {
-		return errors.New("nil summary or nil header in summary")
-	}
-
-	var nextComm *EpochCommittee
-	summaryEpoch := s.Header.Height.EpochNum()
-	if summaryEpoch == lastHeight.EpochNum() {
-		nextComm = lastMatchedComm
-	}
-	if s.NextComm != nil {
-		nextComm = s.NextComm
-	}
-	if err := CheckElectedNextRootByEpochComm(blockVersion, s.Header.ElectedNextRoot, nextComm); err != nil {
-		return fmt.Errorf("check next comm failed: %v", err)
-	}
-	if lastHeight.IsNil() {
-		if s.HistoryProof != nil {
-			return errors.New("history proof is no need")
-		}
-	} else {
-		if s.HistoryProof == nil {
-			return errors.New("missing history proof")
-		}
-		if hisRoot, err := s.HistoryProof.HistoryProof(lastHeight, lastHob); err != nil {
-			return fmt.Errorf("history proof failed: %v", err)
-		} else {
-			if !bytes.Equal(hisRoot, s.Header.HashHistory[:]) {
-				return fmt.Errorf("check history root failed, expecting:%x but:%x",
-					s.Header.HashHistory[:5], common.ForPrint(hisRoot))
-			}
-		}
-	}
-
-	hob, err := s.Header.HashValue()
-	if err != nil {
-		return fmt.Errorf("hash of header failed: %v", err)
-	}
-	if err := s.AuditorPass.VerifyByAuditors(s.Header.ChainID, s.Header.Height, hob, auditorIds); err != nil {
-		return fmt.Errorf("auditor pass verify failed: %v", err)
-	}
-
-	return nil
+	hob := s.Hob()
+	return fmt.Sprintf("Summary.%d{ChainID:%d Height:%s Hob:%x NextComm:%s HistoryProofing:%s Proofs:%d"+
+		" %s AuditorPass:%d}", s.Version, s.ChainId, &(s.Height), common.ForPrint(hob),
+		s.NextComm.String(), &proofing, len(s.Proofs), s.Header.Summary(), len(s.AuditorPass))
 }
 
 func (s *BlockSummary) _summaryHash1() ([]byte, error) {
@@ -1169,7 +1188,7 @@ func (s *BlockSummary) _summaryHash2(proofs *common.MerkleProofs) ([]byte, error
 		return nil, fmt.Errorf("hash of NextComm failed: %v", err)
 	}
 
-	h4, err := common.HashObject(s.HistoryProof)
+	h4, err := common.HashObject(s.Proofs)
 	if err != nil {
 		return nil, fmt.Errorf("hash of HistoryProof failed: %v", err)
 	}
@@ -1195,6 +1214,141 @@ func (s *BlockSummary) _summaryHash2(proofs *common.MerkleProofs) ([]byte, error
 	return common.MerkleHash(hlist, toBeProof, proofs)
 }
 
+// calculate the hash value of BlockSummary, generate block hash proof to hash value of the
+// summary if proof is not nil
+// 1. (ChainID, Height)
+// 2. BlockHash
+// 3. HashObject(NextComm)| NilHash if NextComm == nil
+// 4. HashObject(HistoryProof) | NilHash if len(HistoryProof) == 0
+// 5. HashObject(Header) | NilHash if Header == nil
+// 6. HashObject(AuditorPass) | NilHash if len(AuditorPass) == 0
+// 7. HashObject(Version)
+func (s *BlockSummary) _summaryHash3(proofs *common.MerkleProofs) ([]byte, error) {
+	hlist := make([][]byte, 0, 7)
+	buf := common.ToHeaderPosHashBuffer(s.ChainId, s.Height)
+
+	toBeProof := 4 // default proof to BlockSummary.Header
+	h2 := common.NilHashSlice
+	if s.BlockHash != nil {
+		h2 = s.BlockHash[:]
+		toBeProof = 1
+	}
+
+	var err error
+
+	h3 := common.NilHashSlice
+	if s.NextComm != nil {
+		h3, err = common.HashObject(s.NextComm)
+		if err != nil {
+			return nil, fmt.Errorf("hash of NextComm failed: %v", err)
+		}
+	}
+
+	h4 := common.NilHashSlice
+	if len(s.Proofs) > 0 {
+		h4, err = common.HashObject(s.Proofs)
+		if err != nil {
+			return nil, fmt.Errorf("hash of HistoryProof failed: %v", err)
+		}
+	}
+
+	h5 := common.NilHashSlice
+	if s.Header != nil {
+		h5, err = common.HashObject(s.Header)
+		if err != nil {
+			return nil, fmt.Errorf("hash of header failed: %v", err)
+		}
+		toBeProof = 4
+	}
+
+	h6 := common.NilHashSlice
+	if len(s.AuditorPass) == 0 {
+		h6, err = common.HashObject(s.AuditorPass)
+		if err != nil {
+			return nil, fmt.Errorf("hash of AuditorPass failed: %v", err)
+		}
+	}
+
+	h7, err := common.HashObject(s.Version)
+	if err != nil {
+		return nil, fmt.Errorf("hash of version failed: %v", err)
+	}
+	hlist = append(hlist, buf[:12], h2, h3, h4, h5, h6, h7)
+	return common.MerkleHash(hlist, toBeProof, proofs)
+}
+
+// calculate the hash value of BlockSummary, generate block hash proof to hash value of the
+// summary if proof is not nil
+// 1. BytesToHash(ChainID, Height)
+// 2. BlockHash
+// 3. HashObject(NextComm)| NilHash if NextComm == nil
+// 4. HashObject(HistoryProof) | NilHash if len(HistoryProof) == 0
+// 5. HashObject(Header) | NilHash if Header == nil
+// 6. HashObject(AuditorPass) | NilHash if len(AuditorPass) == 0
+// 7. HashObject(Version)
+// Replace _summaryHash3 with _summaryHash4, and modify the problem that the verification fails
+// due to the inconsistency between the []byte used when generating the proof and the []byte used
+// when calculating the HashValue. Because common.ToHeaderPosHashBuffer(s.ChainId, s.Height) is
+// less than 32 bytes. See the Hash stored in the Proofs in the MerkleHash method, and the []byte
+// length used when calculating the merkle may be different from the hash
+// 用_summaryHash4代替_summaryHash3，修改由于common.ToHeaderPosHashBuffer(s.ChainId, s.Height)不足32字节，
+// 从而导致在生成证明时与计算HashValue时使用的[]byte不一致导致校验失败的问题。
+// 见MerkleHash方法中Proofs中: 存的是Hash，而计算merkle时则使用的[]byte长度可能是不同于hash的
+func (s *BlockSummary) _summaryHash4(proofs *common.MerkleProofs) ([]byte, error) {
+	hlist := make([][]byte, 0, 7)
+	buf := common.ToHeaderPosHashBuffer(s.ChainId, s.Height)
+	h1 := common.BytesToHash(buf[:12]).Bytes()
+
+	toBeProof := 4 // default proof to BlockSummary.Header
+	h2 := common.NilHashSlice
+	if s.BlockHash != nil {
+		h2 = s.BlockHash[:]
+		toBeProof = 1
+	}
+
+	var err error
+
+	h3 := common.NilHashSlice
+	if s.NextComm != nil {
+		h3, err = common.HashObject(s.NextComm)
+		if err != nil {
+			return nil, fmt.Errorf("hash of NextComm failed: %v", err)
+		}
+	}
+
+	h4 := common.NilHashSlice
+	if len(s.Proofs) > 0 {
+		h4, err = common.HashObject(s.Proofs)
+		if err != nil {
+			return nil, fmt.Errorf("hash of HistoryProof failed: %v", err)
+		}
+	}
+
+	h5 := common.NilHashSlice
+	if s.Header != nil {
+		h5, err = common.HashObject(s.Header)
+		if err != nil {
+			return nil, fmt.Errorf("hash of header failed: %v", err)
+		}
+	}
+
+	h6 := common.NilHashSlice
+	if len(s.AuditorPass) == 0 {
+		h6, err = common.HashObject(s.AuditorPass)
+		if err != nil {
+			return nil, fmt.Errorf("hash of AuditorPass failed: %v", err)
+		}
+	}
+
+	h7, err := common.HashObject(s.Version)
+	if err != nil {
+		return nil, fmt.Errorf("hash of version failed: %v", err)
+	}
+	hlist = append(hlist, h1, h2, h3, h4, h5, h6, h7)
+	return common.MerkleHash(hlist, toBeProof, proofs)
+}
+
+// block hash proof
 func (s *BlockSummary) MakeProof() (*trie.NodeProof, error) {
 	if s == nil {
 		return nil, common.ErrNil
@@ -1209,6 +1363,20 @@ func (s *BlockSummary) MakeProof() (*trie.NodeProof, error) {
 	case SummaryVersion2:
 		mproof := common.NewMerkleProofs()
 		_, err := s._summaryHash2(mproof)
+		if err != nil {
+			return nil, err
+		}
+		return trie.NewMerkleOnlyProof(trie.ProofMerkleOnly, mproof), nil
+	case SummaryVersion3:
+		mproof := common.NewMerkleProofs()
+		_, err := s._summaryHash3(mproof)
+		if err != nil {
+			return nil, err
+		}
+		return trie.NewMerkleOnlyProof(trie.ProofMerkleOnly, mproof), nil
+	case SummaryVersion4:
+		mproof := common.NewMerkleProofs()
+		_, err := s._summaryHash4(mproof)
 		if err != nil {
 			return nil, err
 		}
@@ -1236,6 +1404,10 @@ func (s *BlockSummary) HashValue() ([]byte, error) {
 		return common.HashPair(shash, s.Hob()), nil
 	case SummaryVersion2:
 		return s._summaryHash2(nil)
+	case SummaryVersion3:
+		return s._summaryHash3(nil)
+	case SummaryVersion4:
+		return s._summaryHash4(nil)
 	default:
 		hob := s.Hob()
 		if hob == nil {
@@ -1418,13 +1590,19 @@ func (b *BlockEMessage) InfoString(level common.IndentLevel) string {
 		return "Block<nil>"
 	}
 	base := level.IndentString()
+	bodyStr := ""
+	if b.BlockHeader != nil && b.BlockHeader.ChainID.IsMain() {
+		bodyStr = b.BlockBody.AuditedInfoString(level+1, b.GetHeight().BlockNum())
+	} else {
+		bodyStr = b.BlockBody.InfoString(level + 1)
+	}
 	return fmt.Sprintf("Block{"+
 		"\n\t%sHeader: %s"+
 		"\n\t%sBody: %s"+
 		"\n\t%sPass: %s"+
 		"\n%s}",
 		base, b.BlockHeader.InfoString(level+1),
-		base, b.BlockBody.InfoString(level+1),
+		base, bodyStr,
 		base, b.BlockPass.InfoString(level+1),
 		base)
 }
@@ -1500,10 +1678,11 @@ func (b *BlockEMessage) CheckHashs() error {
 	if err := checkBlockHashs("transactions", b.BlockHeader.TransactionRoot, b._txRoot); err != nil {
 		return err
 	}
-	// HdsRoot
-	if err := checkBlockHashs("hds", b.BlockHeader.HdsRoot, b.BlockBody.HdsRoot); err != nil {
-		return err
-	}
+	// moved to _verifyConfirmedInfoRelated
+	// // HdsRoot
+	// if err := checkBlockHashs("hds", b.BlockHeader.HdsRoot, b.BlockBody.HdsRoot); err != nil {
+	// 	return err
+	// }
 	// ElectResultRoot
 	if err := checkBlockHashs("ElectResults", b.BlockHeader.ElectResultRoot, b.BlockBody.ElectResultRoot); err != nil {
 		return err
@@ -1512,11 +1691,11 @@ func (b *BlockEMessage) CheckHashs() error {
 	if err := checkBlockHashs("preelects", b.BlockHeader.PreElectRoot, b.BlockBody.PreElectRoot); err != nil {
 		return err
 	}
-
-	// since 2.0.0 SeedFactorRoot
-	if err := checkBlockHashs("seedFactor", b.BlockHeader.FactorRoot, b.BlockBody.SeedFactorRoot); err != nil {
-		return err
-	}
+	// moved to _verifySeed
+	// // since 2.0.0 SeedFactorRoot
+	// if err := checkBlockHashs("seedFactor", b.BlockHeader.FactorRoot, b.BlockBody.SeedFactorRoot); err != nil {
+	// 	return err
+	// }
 	return nil
 }
 
@@ -1525,6 +1704,16 @@ func (b *BlockEMessage) _txRoot() (*common.Hash, error) {
 		return nil, errors.New("nil block or nil block header")
 	}
 	return b.BlockBody.TransactionsRoot(b.BlockHeader.Version)
+}
+
+func (b *BlockEMessage) SetRestarting(pheight common.Height, phash *common.Hash, restarted *RestartedComm) {
+	b.BlockHeader.ParentHeight = pheight
+	b.BlockHeader.ParentHash = phash.Clone()
+	if PbftBlockNumer(b.BlockHeader.Height.BlockNum()).Elected() {
+		comm := restarted.Comm()
+		b.BlockHeader.ElectedNextRoot = GenElectedNextRoot(BlockVersion, comm, nil)
+	}
+	b.BlockBody.Restarting = restarted.Clone()
 }
 
 const (
@@ -1582,13 +1771,13 @@ type BlockHeader struct {
 	AttendanceHash *common.Hash   `json:"-" short:"Attendence"`      // The current epoch attendance record hash
 	RewardedCursor *common.Height `json:"-" short:"Rewarded"`        // The last processed main chain height for rewarding, while the current chain is the reward chain
 
-	CommitteeHash    *common.Hash   `json:"-" short:"Comm"`     // current epoch Committee member trie root hash
-	ElectedNextRoot  *common.Hash   `json:"-" short:"NextComm"` // root hash of the election result of next epoch committee members
-	NewCommitteeSeed *common.Seed   `json:"seed" short:"Seed"`  // Current election seeds, only in the main chain
-	RREra            *common.EraNum `json:"-" short:"Era"`      // the era corresponding to the root of the current Required Reserve tree. When this value is inconsistent with the height of main chain, it indicates that a new RR tree needs to be calculated
-	RRRoot           *common.Hash   `json:"-" short:"RRR"`      // root hash of the Required Reserve tree in current era. Only in the reward chain and the main chain
-	RRNextRoot       *common.Hash   `json:"-" short:"RRN"`      // root hash of the Required Reserve tree in next era. Only in the reward chain and the main chain
-	RRChangingRoot   *common.Hash   `json:"-" short:"RRC"`      // changes waiting to be processed in current era
+	CommitteeHash   *common.Hash   `json:"-" short:"Comm"`     // current epoch Committee member trie root hash
+	ElectedNextRoot *common.Hash   `json:"-" short:"NextComm"` // root hash of the election result of next epoch committee members
+	Seed            *common.Seed   `json:"seed" short:"Seed"`  // Current election seeds, only in the main chain. Since v3.2.1, never be nil in main chain, the seed for election.
+	RREra           *common.EraNum `json:"-" short:"Era"`      // the era corresponding to the root of the current Required Reserve tree. When this value is inconsistent with the height of main chain, it indicates that a new RR tree needs to be calculated
+	RRRoot          *common.Hash   `json:"-" short:"RRR"`      // root hash of the Required Reserve tree in current era. Only in the reward chain and the main chain
+	RRNextRoot      *common.Hash   `json:"-" short:"RRN"`      // root hash of the Required Reserve tree in next era. Only in the reward chain and the main chain
+	RRChangingRoot  *common.Hash   `json:"-" short:"RRC"`      // changes waiting to be processed in current era
 
 	MergedDeltaRoot  *common.Hash `json:"mergeroot" short:"Merged"` // Root hash of the merged delta sent from other shards
 	BalanceDeltaRoot *common.Hash `json:"deltaroot"`                // Root hash of the generated deltas by this block which needs to be sent to the other shards
@@ -1605,7 +1794,7 @@ type BlockHeader struct {
 
 	ElectResultRoot *common.Hash   `json:"-" short:"ElectResult"` // Since v1.5.0, Election result hash root (including pre election and ordinary election, ordinary one has not been provided yet)
 	PreElectRoot    *common.Hash   `json:"-" short:"PreElect"`    // Since v1.5.0, the root hash of current preelecting list sorted by (Expire, ChainID), only in the main chain
-	FactorRoot      *common.Hash   `json:"-" short:"Factor"`      // since v2.0.0, seed random factor hash
+	FactorRoot      *common.Hash   `json:"-" short:"Factor"`      // since v2.0.0, seed random factor hash. Since v3.2.1, used for generating vrf seed by Hash(body.SeedFactor) at the first non-empty block after pbft.consts.SeedBlock.
 	RRReceiptRoot   *common.Hash   `json:"-" short:"RRRpts"`      // since v2.10.12, in v2.11.0 receipts of RRActs applied in current block
 	Version         uint16         `json:"-" short:"V"`           // since v2.10.12
 	ConfirmedRoot   *common.Hash   `json:"-" short:"Confirmed"`   // since v2.11.3, trie root of all sub-confirmed infos
@@ -1633,7 +1822,7 @@ func (h *BlockHeader) Clone() *BlockHeader {
 		RewardedCursor:   h.RewardedCursor.Clone(),
 		CommitteeHash:    h.CommitteeHash.Clone(),
 		ElectedNextRoot:  h.ElectedNextRoot.Clone(),
-		NewCommitteeSeed: h.NewCommitteeSeed.Clone(),
+		Seed:             h.Seed.Clone(),
 		RREra:            h.RREra.Clone(),
 		RRRoot:           h.RRRoot.Clone(),
 		RRNextRoot:       h.RRNextRoot.Clone(),
@@ -1675,7 +1864,7 @@ func (h *BlockHeader) Equal(o *BlockHeader) bool {
 		h.ParentHeight == o.ParentHeight && h.ParentHash.Equal(o.ParentHash) &&
 		h.RewardAddress == o.RewardAddress && h.AttendanceHash.Equal(o.AttendanceHash) &&
 		h.RewardedCursor.Equal(o.RewardedCursor) && h.CommitteeHash.Equal(o.CommitteeHash) &&
-		h.ElectedNextRoot.Equal(o.ElectedNextRoot) && h.NewCommitteeSeed.Equals(o.NewCommitteeSeed) &&
+		h.ElectedNextRoot.Equal(o.ElectedNextRoot) && h.Seed.Equals(o.Seed) &&
 		h.RREra.Equal(o.RREra) && h.RRRoot.Equal(o.RRRoot) &&
 		h.RRNextRoot.Equal(o.RRNextRoot) && h.RRChangingRoot.Equal(o.RRChangingRoot) &&
 		h.MergedDeltaRoot.Equal(o.MergedDeltaRoot) && h.BalanceDeltaRoot.Equal(o.BalanceDeltaRoot) &&
@@ -1699,6 +1888,10 @@ func (h *BlockHeader) Era() common.EraNum {
 		return h.ParentHeight.EraNum()
 	}
 	return h.Height.EraNum()
+}
+
+func (h *BlockHeader) RandomSeed() []byte {
+	return common.Hash256NoError(h.PreviousHash[:], h.Height.Bytes())
 }
 
 func hashPointerHash(h *common.Hash) []byte {
@@ -1778,10 +1971,10 @@ func (h *BlockHeader) hashList() ([][]byte, error) {
 	hashlist = append(hashlist, hashIndexProperty(posBuffer, BHElectedNextRoot, hashPointerHash(h.ElectedNextRoot)))
 
 	if h.Version == BlockVersionV0 {
-		if h.NewCommitteeSeed == nil {
+		if h.Seed == nil {
 			hh = common.NilHashSlice
 		} else {
-			hh = h.NewCommitteeSeed[:]
+			hh = h.Seed[:]
 		}
 		hh, err = common.Hash256s(hh)
 		if err != nil {
@@ -1789,7 +1982,7 @@ func (h *BlockHeader) hashList() ([][]byte, error) {
 		}
 		hashlist = append(hashlist, hashIndexProperty(posBuffer, BHNewCommitteeSeed, hh))
 	} else {
-		hashlist = append(hashlist, hashIndexProperty(posBuffer, BHNewCommitteeSeed, h.NewCommitteeSeed.Hash().Bytes()))
+		hashlist = append(hashlist, hashIndexProperty(posBuffer, BHNewCommitteeSeed, h.Seed.Hash().Bytes()))
 	}
 
 	hashlist = append(hashlist, hashIndexProperty(posBuffer, BHMergedDeltaRoot, hashPointerHash(h.MergedDeltaRoot)))
@@ -1890,7 +2083,7 @@ func (h *BlockHeader) hashList() ([][]byte, error) {
 func (h *BlockHeader) Hash() common.Hash {
 	hashOfHeader, err := h.HashValue()
 	if err != nil {
-		panic(fmt.Sprintf("BlockHeader %s merkle tree hash failed: %v", h, err))
+		return common.Hash{}
 	}
 	return common.BytesToHash(hashOfHeader)
 }
@@ -2097,6 +2290,21 @@ func (h *BlockHeader) InfoString(level common.IndentLevel) string {
 
 type SeedFactor []byte
 
+func (s SeedFactor) Equal(o SeedFactor) bool {
+	return bytes.Equal(s, o)
+}
+
+func (s SeedFactor) Clone() SeedFactor {
+	if s == nil {
+		return nil
+	}
+	r := make(SeedFactor, len(s))
+	if len(s) > 0 {
+		copy(r, s)
+	}
+	return r
+}
+
 type BlockBody struct {
 	NextCommittee *Committee // election results of the next committee
 	// Deprecated
@@ -2111,7 +2319,7 @@ type BlockBody struct {
 	ElectingResults   ChainElectResults // Since v1.5.0, a list of election results, it's a preelection when Epoch.IsNil()==true, others are local election
 	PreElectings      PreElectings      // Since v1.5.0, the list of preselections in progress, sorted by (expire, chainid)
 	NextRealCommittee *Committee        // Since v1.5.0, when election finished, the result will be put into NextCommittee. If the election is failed, the current committee will continue to be used in the next epoch. At this time, the current committee needs to be written into this field, which can be brought with it when reporting.
-	SeedFactor        SeedFactor        // Since v2.0.0, random factor of seed
+	SeedFactor        SeedFactor        // Since v2.0.0, random factor of seed. since v3.2.1, used as the factor of generating seed
 	Restarting        *RestartedComm    // Since v2.11.5, sub-chain restarting comm and its generation proof
 	Rebooted          *RebootedComm     // Since v2.12.0, main chain rebooted comm and admin signatures
 	RandomSig         []byte            // Since v3.2.0, placeholder in v2.14.2, random for chain, signature by proposer
@@ -2121,9 +2329,6 @@ type BlockBody struct {
 func (bb *BlockBody) Formalize() {
 	if bb == nil {
 		return
-	}
-	if bb.Attendance != nil {
-		bb.Attendance.Formalize()
 	}
 	if len(bb.RewardReqs) > 1 {
 		sort.Sort(bb.RewardReqs)
@@ -2328,7 +2533,7 @@ func (bb *BlockBody) ConfirmedChains() []common.ChainID {
 	return ids
 }
 
-func (bb *BlockBody) InfoString(level common.IndentLevel) string {
+func (bb *BlockBody) _infoString(level common.IndentLevel, num common.BlockNum) string {
 	if bb == nil {
 		return "Body<nil>"
 	}
@@ -2359,7 +2564,7 @@ func (bb *BlockBody) InfoString(level common.IndentLevel) string {
 		indent, len(bb.Txs), len(bb.TxsPas), txparams,
 		indent, len(bb.Deltas),
 		indent, BlockSummarys(bb.Hds).InfoString(next),
-		indent, bb.Attendance.String(),
+		indent, bb.Attendance.AuditString(num),
 		indent, bb.RewardReqs.InfoString(next),
 		indent, bb.ElectingResults.InfoString(next),
 		indent, bb.PreElectings.InfoString(next),
@@ -2369,6 +2574,14 @@ func (bb *BlockBody) InfoString(level common.IndentLevel) string {
 		indent, bb.Rebooted.InfoString(next),
 		indent, common.ForPrint(bb.RandomSig, 0, -1),
 		base)
+}
+
+func (bb *BlockBody) InfoString(level common.IndentLevel) string {
+	return bb._infoString(level, common.NilBlock)
+}
+
+func (bb *BlockBody) AuditedInfoString(level common.IndentLevel, num common.BlockNum) string {
+	return bb._infoString(level, num)
 }
 
 // TXIndex Transaction index

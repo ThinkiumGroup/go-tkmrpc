@@ -2,8 +2,19 @@ package models
 
 import (
 	"encoding/hex"
+	"encoding/json"
+	"math/big"
+	"reflect"
 	"testing"
+
+	"github.com/ThinkiumGroup/go-cipher"
+	"github.com/ThinkiumGroup/go-common"
 )
+
+func TestMain(m *testing.M) {
+	TKMCipher = cipher.NewSecpCipher()
+	m.Run()
+}
 
 func TestNewEthTx(t *testing.T) {
 	// bs0, _ := hex.DecodeString("30786638373130383835356432316462613030303832363161383934373835376665343236373139396330373636613764613165316162363662613031613432316136343861303239643339346135643633303534343030303038303833303232333037613032353662313265613337643365343832346331393233363464653134626565393637323939656339326239353532613630643931356230373734363035323139613034646164623563623966316532383130623366656633336161313938623264656230663733326232633664643933336334386132353866373139313566396236")
@@ -21,4 +32,58 @@ func TestNewEthTx(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("pub:%x\nsig:%x", pub, sig)
+}
+
+func TestTkmTx(t *testing.T) {
+	bridgeExtra := &BridgeReqExtra{
+		Type:    0xff,
+		From:    1,
+		Height:  876343,
+		Account: randomAddress(),
+		Nonce:   9,
+	}
+	extra, err := json.Marshal(bridgeExtra)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := &TkmTx{
+		ChainID:    big.NewInt(70005),
+		Nonce:      222,
+		To:         nil,
+		UseLocal:   true,
+		Value:      nil,
+		Data:       common.RandomBytes(68),
+		Gas:        400000,
+		GasPrice:   nil,
+		GasTipCap:  nil,
+		GasFeeCap:  nil,
+		AccessList: nil,
+		Extra:      extra,
+		Version:    TxVersion,
+		MultiSigs:  common.RandomByteSlices(5, 65),
+		V:          big.NewInt(299),
+		R:          nil,
+		S:          nil,
+	}
+	ethtx := NewEthTx(tx)
+
+	buf, err := ethtx.MarshalBinary()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newtx := new(ETHTransaction)
+	err = newtx.UnmarshalBinary(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newinner, ok := newtx.inner.(*TkmTx)
+	if !ok {
+		t.Fatalf("not a TkmTx, but: %s", reflect.TypeOf(newtx.inner).Name())
+	}
+	if newinner.like(tx) == false {
+		t.Fatalf("not equal after endec: %+v -> %+v", tx, newinner)
+	}
+	t.Logf("before: %+v\nafter: %+v", tx, newinner)
 }

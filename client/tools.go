@@ -1378,6 +1378,35 @@ func (c *Client) GetBlockTxs(ctx context.Context, height common.Height, page, si
 	}
 }
 
+func (c *Client) ListRRInfos(ctx context.Context, chainid common.ChainID, height common.Height, page, size int32) ([]*models.RRInfo, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		req := &tkmrpc.RpcBlockTxsReq{
+			Chainid: uint32(chainid),
+			Height:  uint64(height),
+			Page:    page,
+			Size:    size,
+		}
+		resp, err := c.NodeClient.ListRRInfos(context.Background(), req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.Code != tkmrpc.SuccessCode {
+			return nil, fmt.Errorf("response code error:%d", resp.Code)
+		}
+		if len(resp.Stream) == 0 {
+			return nil, nil
+		}
+		infos := make([]*models.RRInfo, 0)
+		if err = rtl.Unmarshal(resp.Stream, &infos); err != nil {
+			return nil, fmt.Errorf("unmarshal failed: %v", err)
+		}
+		return infos, nil
+	}
+}
+
 func (c *Client) GetBTransactions(ctx context.Context, addr common.Address, start, end common.Height) (*BTxs, error) {
 	select {
 	case <-ctx.Done():
@@ -1484,6 +1513,90 @@ func (c *Client) GetCommProof(ctx context.Context, epoch common.EpochNum) (*RpcC
 		}
 		return cproof, nil
 	}
+}
+
+func (c *Client) BridgeInfoManage(ctx context.Context, requester common.Identifier,
+	adminPrivs [][]byte, name string, params ...interface{}) error {
+	nonce, err := c.Nonce(ctx, requester.Address())
+	if err != nil {
+		return err
+	}
+	input, err := models.BridgeInfoAbi.Pack(name, params...)
+	if err != nil {
+		return err
+	}
+	txHash, err := c.TxMS(ctx, requester, &models.AddressOfBridgeInfo, nonce, nil,
+		input, false, 0, nil, adminPrivs...)
+	if err != nil {
+		return err
+	}
+	rec, err := c.TxReceipt(ctx, txHash)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s\n", rec.InfoString(0))
+	return rec.Parse(func([]byte) error {
+		return nil
+	})
+}
+
+func (c *Client) BridgeInfoCall(ctx context.Context, requester common.Identifier, parser func([]byte) error,
+	name string, params ...interface{}) error {
+	nonce, err := c.Nonce(ctx, requester.Address())
+	if err != nil {
+		return err
+	}
+	input, err := models.BridgeInfoAbi.Pack(name, params...)
+	if err != nil {
+		return err
+	}
+	rec, err := c.Call(ctx, requester.AddressP(), &models.AddressOfBridgeInfo, nonce, nil, input, false)
+	if err != nil {
+		return err
+	}
+	return rec.Parse(parser)
+}
+
+func (c *Client) ListBridgeInfosOf(ctx context.Context, requester common.Identifier, fromChain common.ChainID,
+	fromContract common.Address) ([]models.ScErcInfo, error) {
+	var infos []models.ScErcInfo
+	err := c.BridgeInfoCall(ctx, requester, func(out []byte) error {
+		output := new(struct {
+			Exist bool               `abi:"exist"`
+			Maps  []models.ScErcInfo `abi:"maps"`
+		})
+		if errr := models.BridgeInfoAbi.UnpackReturns(output, models.BridgeInfoList, out); errr != nil {
+			return errr
+		}
+		if !output.Exist {
+			return nil
+		}
+		infos = output.Maps
+		return nil
+	}, models.BridgeInfoList, models.NewErcInfo(fromChain, fromContract))
+	if err != nil {
+		return nil, err
+	}
+	return infos, nil
+}
+
+func (c *Client) GetBridgeInfoTo(ctx context.Context, requester common.Identifier, toChain common.ChainID,
+	toContract common.Address) (from *models.ScErcInfo, ttype models.TokenType, exist bool, err error) {
+	err = c.BridgeInfoCall(ctx, requester, func(out []byte) error {
+		output := new(struct {
+			Exist bool             `abi:"exist"`
+			From  models.ScErcInfo `abi:"from"`
+			TType uint8            `abi:"ercType"`
+		})
+		if errr := models.BridgeInfoAbi.UnpackReturns(output, models.BridgeInfoGet, out); errr != nil {
+			return errr
+		}
+		exist = output.Exist
+		from = &output.From
+		ttype = models.TokenType(output.TType)
+		return nil
+	}, models.BridgeInfoGet, models.NewErcInfo(toChain, toContract))
+	return
 }
 
 func SignDataRequester(dr models.DataRequester, privs ...[]byte) error {

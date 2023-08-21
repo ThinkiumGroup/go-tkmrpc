@@ -12,6 +12,10 @@ const (
 	DynamicFeeTxType
 )
 
+// 为了使ETHSigner无状态，Signer中的chainId被取消。因此，当VRS信息不全时，会导致LegacyTx的chainID()和Hash()方法的错误
+// Hash()方法返回错误的signature hash值，会影响签名等一系列问题。
+// 所以，在GTKM中，LegacyTx只能存储有签名的完全信息。这一点，由所有创建ETHTransaction的地方确保。
+// 需要签名时，可以使用Transaction对象
 // LegacyTx is the transaction data of regular Ethereum transactions.
 type LegacyTx struct {
 	Nonce    uint64          // nonce of sender account
@@ -74,8 +78,4 @@ func (tx *LegacyTx) rawSignatureValues() (v, r, s *big.Int) {
 
 func (tx *LegacyTx) setSignatureValues(chainID, v, r, s *big.Int) {
 	tx.V, tx.R, tx.S = v, r, s
-}
-
-func (tx *LegacyTx) from() *common.Address {
-	return nil
 }

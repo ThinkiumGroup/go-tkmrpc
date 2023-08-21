@@ -95,6 +95,24 @@ type confirmedInfoV000 struct {
 	ReHistoryRoot    []byte
 }
 
+func (c *ConfirmedInfo) GetLastConfirmedBy() common.Height {
+	if c == nil {
+		return common.NilHeight
+	}
+	if c.By.Compare(c.RestartConfirmed) >= 0 {
+		return c.By
+	} else {
+		return c.RestartConfirmed
+	}
+}
+
+func (c *ConfirmedInfo) GetHeight() common.Height {
+	if c == nil {
+		return common.NilHeight
+	}
+	return c.Height
+}
+
 func (c *ConfirmedInfo) ShouldRestart(current common.Height) bool {
 	if current.IsNil() {
 		return false
@@ -314,6 +332,16 @@ type ChainConfirmed struct {
 	ReHistories RestartHistories `json:"restarts"`
 }
 
+func (c *ChainConfirmed) Summary() string {
+	if c == nil {
+		return "<nil>"
+	}
+	if c.Info == nil {
+		return "CConfirmed<nil"
+	}
+	return fmt.Sprintf("CConfirmed{ChainID:%s Height:%s By:%s}", c.ChainID, &(c.Info.Height), &(c.Info.By))
+}
+
 func (c *ChainConfirmed) String() string {
 	if c == nil {
 		return "CConfirmed<nil>"
@@ -386,4 +414,30 @@ func (cs ChainConfirmeds) FromTrie(confirmedTrie *trie.Trie) ChainConfirmeds {
 		})
 	}
 	return confirmeds
+}
+
+func (cs ChainConfirmeds) Summary() string {
+	if cs == nil {
+		return "<nil>"
+	}
+	if len(cs) == 0 {
+		return "[]"
+	}
+	buf := new(bytes.Buffer)
+	buf.WriteByte('[')
+	for i, c := range cs {
+		if i > 0 {
+			buf.WriteString(", ")
+		}
+		buf.WriteString(c.Summary())
+	}
+	buf.WriteByte(']')
+	return buf.String()
+}
+
+type Confirmer interface {
+	LegalLatency(current common.Height) (confirming common.Height)
+	IsLegalLatency(current, confirming common.Height) bool
+	NeedIntegrity(mainCurrent, confirmedBy common.Height) bool
+	CheckIntegrity(mainCurrent, confirmedBy common.Height) bool
 }

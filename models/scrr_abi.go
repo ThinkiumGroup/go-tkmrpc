@@ -25,9 +25,15 @@ import (
 )
 
 var (
-	RRAbi              abi.ABI
-	RRMergedToEventSig common.Hash
+	RRAbi               abi.ABI
+	RRMergedToEventSig  common.Hash
+	RRPenalizedEventSig common.Hash
+	RRPenalizeID        string
 )
+
+func init() {
+	InitRRAbi()
+}
 
 const (
 	scrrAbiJson string = `
@@ -44,6 +50,73 @@ const (
 		],
 		"name": "MergedTo",
 		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": true,
+				"internalType": "bytes32",
+				"name": "nodeIdHash",
+				"type": "bytes32"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint16",
+				"name": "typeCode",
+				"type": "uint16"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "estimated",
+				"type": "uint256"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint32",
+				"name": "chainId",
+				"type": "uint32"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint64",
+				"name": "rewardEra",
+				"type": "uint64"
+			}
+		],
+		"name": "PendingPenalty",
+		"type": "event"
+	},
+	{
+		"constant": false,
+		"inputs": [
+			{
+				"internalType": "uint16",
+				"name": "typeCode",
+				"type": "uint16"
+			},
+			{
+				"internalType": "uint256",
+				"name": "penalRateNum",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "penalRateDenom",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "penalValue",
+				"type": "uint256"
+			}
+		],
+		"name": "addPenaltyType",
+		"outputs": [],
+		"payable": false,
+		"stateMutability": "nonpayable",
+		"type": "function"
 	},
 	{
 		"constant": false,
@@ -100,6 +173,21 @@ const (
 		],
 		"payable": true,
 		"stateMutability": "payable",
+		"type": "function"
+	},
+	{
+		"constant": false,
+		"inputs": [
+			{
+				"internalType": "uint16",
+				"name": "typeCode",
+				"type": "uint16"
+			}
+		],
+		"name": "deletePenaltyType",
+		"outputs": [],
+		"payable": false,
+		"stateMutability": "nonpayable",
 		"type": "function"
 	},
 	{
@@ -292,6 +380,102 @@ const (
 		"constant": false,
 		"inputs": [
 			{
+				"internalType": "uint16",
+				"name": "typeCode",
+				"type": "uint16"
+			}
+		],
+		"name": "getPenaltyType",
+		"outputs": [
+			{
+				"internalType": "bool",
+				"name": "exist",
+				"type": "bool"
+			},
+			{
+				"internalType": "uint256",
+				"name": "penalRateNum",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "penalRateDenom",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "penalValue",
+				"type": "uint256"
+			}
+		],
+		"payable": false,
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"constant": false,
+		"inputs": [
+			{
+				"internalType": "uint16",
+				"name": "typeCode",
+				"type": "uint16"
+			},
+			{
+				"internalType": "uint256",
+				"name": "penalRateNum",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "penalRateDenom",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "penalValue",
+				"type": "uint256"
+			}
+		],
+		"name": "modifyPenaltyType",
+		"outputs": [],
+		"payable": false,
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"constant": false,
+		"inputs": [
+			{
+				"internalType": "bytes",
+				"name": "nodeId",
+				"type": "bytes"
+			},
+			{
+				"internalType": "uint16",
+				"name": "typeCode",
+				"type": "uint16"
+			},
+			{
+				"internalType": "uint32",
+				"name": "chainId",
+				"type": "uint32"
+			},
+			{
+				"internalType": "uint64",
+				"name": "rewardEra",
+				"type": "uint64"
+			}
+		],
+		"name": "penalize",
+		"outputs": [],
+		"payable": false,
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"constant": false,
+		"inputs": [
+			{
 				"internalType": "bytes",
 				"name": "nodeId",
 				"type": "bytes"
@@ -453,18 +637,24 @@ const (
 )
 
 const (
-	RRDepositMName          = "deposit"
-	RRWithdrawMName         = "withdraw"
-	RRProofMName            = "proof"
-	RRGetDepositAmountMName = "getDepositAmount"
-	RRWithdrawPartMName     = "withdrawPart"
-	RRGetOngoingAmountMName = "getOngoingAmount"
-	RRSetStatusMName        = "setStatus"
-	RRClrStatusMName        = "clrStatus"
-	RRGetInfoMName          = "getInfo"
-	RRMergedToEName         = "MergedTo"
-	RRDelegateMName         = "delegate"
-	RRUnDelegateMName       = "undelegate"
+	RRMergedToEName          = "MergedTo"
+	RRDepositMName           = "deposit"
+	RRWithdrawMName          = "withdraw"
+	RRWithdrawPartMName      = "withdrawPart"
+	RRProofMName             = "proof"
+	RRGetInfoMName           = "getInfo"
+	RRGetDepositAmountMName  = "getDepositAmount"
+	RRGetOngoingAmountMName  = "getOngoingAmount"
+	RRSetStatusMName         = "setStatus"
+	RRClrStatusMName         = "clrStatus"
+	RRDelegateMName          = "delegate"
+	RRUnDelegateMName        = "undelegate"
+	RRAddPenaltyTypeMName    = "addPenaltyType"
+	RRModifyPenaltyTypeMName = "modifyPenaltyType"
+	RRDeletePenaltyTypeMName = "deletePenaltyType"
+	RRGetPenaltyTypeMName    = "getPenaltyType"
+	RRPenalizeMName          = "penalize"
+	RRPendingPenaltyEName    = "PendingPenalty"
 )
 
 func init() {
@@ -477,8 +667,9 @@ func InitRRAbi() {
 		panic(fmt.Sprintf("read rr abi error: %v", err))
 	}
 	RRAbi = a
-	mergedToSig := RRAbi.Events[RRMergedToEName].Sig
-	RRMergedToEventSig = common.Hash256([]byte(mergedToSig))
+	RRMergedToEventSig = RRAbi.Events[RRMergedToEName].ID
+	RRPenalizedEventSig = RRAbi.Events[RRPendingPenaltyEName].ID
+	RRPenalizeID = string(RRAbi.Methods[RRPenalizeMName].ID)
 }
 
 type (
@@ -550,4 +741,8 @@ func (p *POSInfo) String() string {
 		common.ForPrint(p.NidHash, 0), p.Height, p.NodeType, math.BigIntForPrint(p.Depositing),
 		math.BigIntForPrint(p.ValidAmount), math.BigIntForPrint(p.Available), p.RewardAddr[:], p.Version,
 		p.NodeCount, p.Status, math.BigIntForPrint(p.Delegated), math.BigIntForPrint(p.ValidDelegated))
+}
+
+func NewRRPenalize(nodeId common.NodeID, typeCode uint16, subChainId common.ChainID, rewardEra common.EraNum) ([]byte, error) {
+	return RRAbi.Pack(RRPenalizeMName, nodeId[:], typeCode, uint32(subChainId), uint64(rewardEra))
 }

@@ -1,18 +1,24 @@
 package models
 
 import (
+	"bytes"
 	"errors"
 	"math/big"
 	"sync/atomic"
 	"time"
 
 	"github.com/ThinkiumGroup/go-common"
+	"github.com/ThinkiumGroup/go-common/math"
 	"github.com/ThinkiumGroup/go-common/rlp"
 )
 
 type StorageSize float64
 
-var ETHSigner Signer = NewLondonSigner()
+var (
+	ETHSigner Signer = NewLondonSigner()
+	//
+	ETHDefaultChainID = big.NewInt(1)
+)
 
 // ETHTransaction is an Ethereum transaction.
 type ETHTransaction struct {
@@ -102,8 +108,18 @@ func (tx *ETHTransaction) ToTransaction() (*Transaction, error) {
 // 	return &ETHTransaction{inner: cpy, time: tx.time}, nil
 // }
 
+func (tx *ETHTransaction) encodeTyped(w *bytes.Buffer) error {
+	w.WriteByte(tx.Type())
+	return rlp.Encode(w, tx.inner)
+}
+
 func (tx *ETHTransaction) MarshalBinary() ([]byte, error) {
-	return rlp.EncodeToBytes(tx.inner)
+	if tx.Type() == LegacyTxType {
+		return rlp.EncodeToBytes(tx.inner)
+	}
+	var buf bytes.Buffer
+	err := tx.encodeTyped(&buf)
+	return buf.Bytes(), err
 }
 
 func (tx *ETHTransaction) GetSigner() Signer {
@@ -118,7 +134,7 @@ func (tx *ETHTransaction) RawSignatureValues() (v, r, s *big.Int) {
 
 func (tx *ETHTransaction) HasSignatureValues() (v, r, s *big.Int, exist bool) {
 	v, r, s = tx.RawSignatureValues()
-	if (r == nil || r.Sign() <= 0) || (s == nil || s.Sign() <= 0) {
+	if (*math.BigInt)(r).Sign() <= 0 || (*math.BigInt)(s).Sign() <= 0 {
 		return nil, nil, nil, false
 	}
 	return v, r, s, true
@@ -144,7 +160,7 @@ func isProtectedV(V *big.Int) bool {
 }
 
 func (tx *ETHTransaction) UnmarshalBinary(b []byte) error {
-	if len(b) > 0 && b[0] > 0x7f {
+	if len(b) > 0 && b[0] > TxTypeMax {
 		// It's a legacy transaction.
 		var data LegacyTx
 		err := rlp.DecodeBytes(b, &data)
@@ -180,6 +196,10 @@ func (tx *ETHTransaction) decodeTyped(b []byte) (TxData, error) {
 		return &inner, err
 	case DynamicFeeTxType:
 		var inner DynamicFeeTx
+		err := rlp.DecodeBytes(b[1:], &inner)
+		return &inner, err
+	case TkmTxType:
+		var inner TkmTx
 		err := rlp.DecodeBytes(b[1:], &inner)
 		return &inner, err
 	default:
@@ -264,8 +284,9 @@ func (tx *ETHTransaction) Hash() common.Hash {
 // Therefore, ETHTransaction does not support signature operations, and therefore the Signer.Hash
 // method is deleted
 func (tx *ETHTransaction) HashValue() ([]byte, error) {
-	// signer := tx.GetSigner()
-	// hash := signer.Hash(tx)
-	// return hash.Slice(), nil
+	// // signer := tx.GetSigner()
+	// // hash := signer.Hash(tx)
+	// h := ETHSigner.Hash(tx)
+	// return h.Slice(), nil
 	panic("ETHTransaction.HashValue should not be used")
 }

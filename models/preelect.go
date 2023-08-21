@@ -389,6 +389,17 @@ func (pe *PreElecting) IsRestarting() bool {
 	return pe != nil && pe.LastConsHash != nil
 }
 
+func (pe *PreElecting) RestartingPart() RestartingPart {
+	if pe.IsRestarting() {
+		return RestartingPart{
+			LastHeight: pe.LastConsHeight,
+			LashHash:   pe.LastConsHash.Clone(),
+		}
+	} else {
+		return RestartingPart{LastHeight: common.NilHeight}
+	}
+}
+
 func (pe *PreElecting) PreSeed() (*common.Seed, error) {
 	if pe.Seed == nil || pe.CachedHash == nil {
 		return nil, fmt.Errorf("vrf preelect seed (%x) or hash (%x) is nil",

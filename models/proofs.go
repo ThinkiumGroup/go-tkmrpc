@@ -119,6 +119,9 @@ func (s *HdsSummary) HeaderProof(proofChain *trie.ProofChain) (proofedHob []byte
 		if toBeProof >= 0 {
 			mProofs := common.NewMerkleProofs()
 			hdsRoot, err := common.ValuesMerkleTreeHash(s.Summaries, toBeProof, mProofs)
+			if err != nil {
+				return nil, fmt.Errorf("HeaderProof of index:%d proofing failed: %v", toBeProof, err)
+			}
 			if !bytes.Equal(hdsRoot, s.Block.BlockHeader.HdsRoot.Bytes()) {
 				return nil, fmt.Errorf("HeaderProof hds root miss match %s", s.Block.BlockHeader)
 			}

@@ -108,6 +108,7 @@ func InitSRAbi() {
 		panic(fmt.Sprintf("read share reward abi error: %v", err))
 	}
 	SRAbi = a
-	rewardDetailSig := SRAbi.Events[SRRewardDetailName].Sig
-	SRRewardDetailEventSig = common.Hash256([]byte(rewardDetailSig))
+	// rewardDetailSig := SRAbi.Events[SRRewardDetailName].Sig()
+	// SRRewardDetailEventSig = common.Hash256([]byte(rewardDetailSig))
+	SRRewardDetailEventSig = SRAbi.Events[SRRewardDetailName].ID
 }

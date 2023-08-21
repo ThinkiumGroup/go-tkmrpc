@@ -685,64 +685,6 @@ func (c *ChainTrie) GetRewardChainID() common.ChainID {
 	return common.NilChainID
 }
 
-// func (c *ChainTrie) AddDataNode(cid common.ChainID, nid common.NodeID) error {
-// 	c.lock.Lock()
-// 	defer c.lock.Unlock()
-// 	info, ok := c.getChainInfosLocked(cid)
-// 	if !ok || info == nil {
-// 		return errors.New("chain info not found")
-// 	}
-// 	if info.AddDataNode(nid) {
-// 		c.trie.PutValue(info)
-// 		log.Infof("chain %d add data node %s successed %s", cid, nid, info.Datas)
-// 		c.clearCacheLocked()
-// 	}
-//
-// 	return nil
-// }
-//
-// func (c *ChainTrie) RemoveDataNode(cid common.ChainID, nid common.NodeID) error {
-// 	c.lock.Lock()
-// 	defer c.lock.Unlock()
-// 	info, ok := c.getChainInfosLocked(cid)
-// 	if !ok || info == nil {
-// 		return errors.New("chain info not found")
-// 	}
-// 	if info.RemoveDataNode(nid) {
-// 		c.trie.PutValue(info)
-// 		log.Infof("chain %d remove data node %s successed %s", cid, nid, info.Datas)
-// 		c.clearCacheLocked()
-// 	}
-// 	return nil
-// }
-//
-// func (c *ChainTrie) AddBootNode(bootNode common.Dataserver) error {
-// 	c.lock.Lock()
-// 	defer c.lock.Unlock()
-// 	info, ok := c.getChainInfosLocked(common.ChainID(bootNode.ChainID))
-// 	if !ok || info == nil {
-// 		return errors.New("chain info not found")
-// 	}
-// 	if info.AddBootNode(bootNode) {
-// 		c.trie.PutValue(info)
-// 	}
-// 	return nil
-// }
-//
-// func (c *ChainTrie) RemoveBootNode(cid common.ChainID, nid common.NodeID) error {
-// 	c.lock.Lock()
-// 	defer c.lock.Unlock()
-// 	info, ok := c.getChainInfosLocked(cid)
-// 	if !ok || info == nil {
-// 		return errors.New("chain info not found")
-// 	}
-// 	if info.RemoveBootNode(nid) {
-// 		log.Infof("chain %d remove boot node %s successed", cid, nid)
-// 		c.trie.PutValue(info)
-// 	}
-// 	return nil
-// }
-
 func (c *ChainTrie) Rollback() {
 	if c == nil {
 		return
@@ -794,7 +736,11 @@ func (c *ChainTrie) String() string {
 	if c == nil {
 		return "ChainTrie<nil>"
 	}
-	return fmt.Sprintf("ChainTrie{%s}", c.trie.Origin)
+	root, err := c.trie.Origin.HashValue()
+	if err != nil {
+		root = nil
+	}
+	return fmt.Sprintf("ChainTrie{root:%x %s}", common.ForPrint(root, 0, -1), c.trie.Origin.PrintValues())
 }
 
 // Whether the chain does not need pay gas feed. If true, the second value returns the chain

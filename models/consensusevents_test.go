@@ -43,7 +43,7 @@ func TestAttendanceRecord_Hash(t *testing.T) {
 	for i := 0; i < size; i++ {
 		nids[i] = common.BytesToNodeID(common.RandomBytes(common.NodeIDBytes))
 	}
-	record := NewAttendanceRecord(23, nids...)
+	record := NewAttendanceRecord(23, nil, nids...)
 	h1, err := record.Hash()
 	if err != nil {
 		t.Fatalf("1.Hash() failed: %v", err)

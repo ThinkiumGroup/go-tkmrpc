@@ -67,8 +67,8 @@ type Signer interface {
 	SignatureValues(ethChainid *big.Int, txType byte, sig []byte) (r, s, v *big.Int, err error)
 	// ChainID() *big.Int
 
-	// Hash returns 'signature hash', i.e. the transaction hash that is signed by the
-	// private key. This hash does not uniquely identify the transaction.
+	// // Hash returns 'signature hash', i.e. the transaction hash that is signed by the
+	// // private key. This hash does not uniquely identify the transaction.
 	Hash(tx *ETHTransaction) common.Hash
 	HashGtkm(tx *Transaction) common.Hash
 	HashGtkmWithSig(tx *Transaction) common.Hash

@@ -15,6 +15,7 @@
 package models
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -50,7 +51,7 @@ func TestBlockHeaderMarshal(t *testing.T) {
 		RewardedCursor:   nil,
 		CommitteeHash:    common.BytesToHashP([]byte{3}),
 		ElectedNextRoot:  nil,
-		NewCommitteeSeed: nil,
+		Seed:             nil,
 		RREra:            nil,
 		RRRoot:           nil,
 		RRNextRoot:       nil,
@@ -171,6 +172,36 @@ func TestEthTx(t *testing.T) {
 			t.Logf("Hash(tx1):%x Hash(tx2):%x", h1[:], h2[:])
 		}
 	}
+}
+
+func TestBlockSummary_MakeProof(t *testing.T) {
+	hashOfHeader := common.BytesToHash(common.RandomBytes(32))
+	summary := &BlockSummary{
+		ChainId:     1,
+		Height:      1999,
+		BlockHash:   &hashOfHeader,
+		NextComm:    nil,
+		Version:     SummaryVersion4,
+		Proofs:      nil,
+		Header:      nil,
+		AuditorPass: nil,
+	}
+
+	nProof, err := summary.MakeProof()
+	if err != nil {
+		t.Fatalf("make proof failed: %v", err)
+	}
+	// verify nProof
+	summaryHash, err := nProof.Proof(hashOfHeader)
+	if err != nil {
+		t.Fatalf("verify hash of summary failed: %v", err)
+	}
+	hos, err := common.HashObject(summary)
+	if err != nil || bytes.Equal(hos, summaryHash) == false {
+		t.Fatalf("verify hash of summary proof of %s %s failed: %v should:%x but:%x",
+			summary, nProof, err, common.ForPrint(hos), common.ForPrint(summaryHash))
+	}
+	t.Logf("%s make proof check", summary)
 }
 
 func TestBlockHeader_HashValue(t *testing.T) {

@@ -113,6 +113,56 @@ const Posv3AbiJson string = `
 		"inputs": [
 			{
 				"internalType": "bytes",
+				"name": "nodeId",
+				"type": "bytes"
+			},
+			{
+				"internalType": "uint8",
+				"name": "nodeType",
+				"type": "uint8"
+			},
+			{
+				"internalType": "uint32",
+				"name": "chainId",
+				"type": "uint32"
+			},
+			{
+				"internalType": "uint64",
+				"name": "epoch",
+				"type": "uint64"
+			},
+			{
+				"internalType": "uint64",
+				"name": "era",
+				"type": "uint64"
+			},
+			{
+				"internalType": "uint16",
+				"name": "should",
+				"type": "uint16"
+			},
+			{
+				"internalType": "uint16",
+				"name": "actual",
+				"type": "uint16"
+			},
+			{
+				"internalType": "uint64",
+				"name": "auditedCount",
+				"type": "uint64"
+			}
+		],
+		"name": "reportWithAudit",
+		"outputs": [],
+		"payable": false,
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"constant": false,
+		"inputs": [
+			{
+				"internalType": "bytes",
 				"name": "NidHash",
 				"type": "bytes"
 			}
@@ -127,6 +177,7 @@ const Posv3AbiJson string = `
 
 const (
 	Posv3ReportName     = "report"
+	Posv3AuditedName    = "reportWithAudit"
 	Posv3AwardName      = "award"
 	Posv3WithdrawName   = "withdrawnDeposit"
 	Posv3UnDelegateName = "delegationRevoked"
@@ -134,10 +185,26 @@ const (
 
 type RewardType uint8
 
+func (r RewardType) String() string {
+	switch r {
+	case RTConsensus:
+		return "Consensus"
+	case RTData:
+		return "Data"
+	case RTDelegation:
+		return "Delegation"
+	case RTAudit:
+		return "Auditor"
+	default:
+		return "N/A"
+	}
+}
+
 const (
 	RTConsensus RewardType = iota
 	RTData
 	RTDelegation
+	RTAudit
 )
 
 var (
@@ -166,9 +233,14 @@ func init() {
 }
 
 func NewPosv3Report(nid common.NodeID, nodeType common.NodeType, chainid common.ChainID,
-	epoch common.EpochNum, era common.EraNum, should, actual uint16) ([]byte, error) {
-	return Posv3Abi.Pack(Posv3ReportName, nid[:], uint8(nodeType), uint32(chainid),
-		uint64(epoch), uint64(era), should, actual)
+	epoch common.EpochNum, era common.EraNum, should, actual uint16, auditedCount int) ([]byte, error) {
+	if auditedCount <= 0 {
+		return Posv3Abi.Pack(Posv3ReportName, nid[:], uint8(nodeType), uint32(chainid),
+			uint64(epoch), uint64(era), should, actual)
+	} else {
+		return Posv3Abi.Pack(Posv3AuditedName, nid[:], uint8(nodeType), uint32(chainid),
+			uint64(epoch), uint64(era), should, actual, uint64(auditedCount))
+	}
 }
 
 func NewPosv3Award(rewardType RewardType, era common.EraNum) ([]byte, error) {

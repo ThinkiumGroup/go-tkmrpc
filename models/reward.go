@@ -399,6 +399,11 @@ type (
 		// The main chain block height at the time of the last deposit
 		// because we use Height==0 to indicate that it's a genesis node, so there should be
 		// no user node deposit at this moment.
+		// since v3.2.1, use NilHeight for genesis node.
+		// First, both 0 and NilHeight of Height are judged as genesis node, and when switching
+		// era, replace all Height==0 with NilHeight. Then,
+		// TODO: through the upgrade, the judgment condition of genesis node is set to NilHeight.
+		//  Only after that can support stateful chain startup
 		Height common.Height `rtlorder:"1"`
 		// Which type of node, supports common.Consensus/common.Data
 		Type common.NodeType `rtlorder:"2"`
@@ -658,9 +663,9 @@ func (r *RRInfo) String() string {
 	if r == nil {
 		return "RR<nil>"
 	}
-	return fmt.Sprintf("RR.%d{NIDH:%x Height:%d Type:%s Withdraw:%s(%s) Penalized:%d "+
+	return fmt.Sprintf("RR.%d{NIDH:%x Height:%s Type:%s Withdraw:%s(%s) Penalized:%d "+
 		"Amount:%s Avail:%s Addr:%s Ratio:%s NC:%d Status:%d Delegated:%s UnDele:%s}",
-		r.Version, r.NodeIDHash[:5], r.Height, r.Type, r.WithdrawDemand, r.Withdrawings,
+		r.Version, r.NodeIDHash[:5], &(r.Height), r.Type, r.WithdrawDemand, r.Withdrawings,
 		r.PenalizedTimes, math.BigIntForPrint(r.Amount), math.BigIntForPrint(r.Avail),
 		r.RewardAddr, r.Ratio, r.NodeCount, r.Status, math.BigIntForPrint(r.Delegated),
 		r.Undelegatings)
@@ -674,7 +679,7 @@ func (r *RRInfo) InfoString(indentLevel common.IndentLevel) string {
 	indent := (indentLevel + 1).IndentString()
 	return fmt.Sprintf("RR.%d{"+
 		"\n%sNodeIDHash: %x"+
-		"\n%sHeight: %d"+
+		"\n%sHeight: %s"+
 		"\n%sType: %s"+
 		"\n%sWithdrawDemand: %s"+
 		"\n%sPenalizedTimes: %d"+
@@ -690,7 +695,7 @@ func (r *RRInfo) InfoString(indentLevel common.IndentLevel) string {
 		"\n%s}",
 		r.Version,
 		indent, r.NodeIDHash[:],
-		indent, r.Height,
+		indent, &(r.Height),
 		indent, r.Type,
 		indent, r.WithdrawDemand,
 		indent, r.PenalizedTimes,
@@ -870,7 +875,7 @@ func (r *RRInfo) HashValue() ([]byte, error) {
 }
 
 func (r *RRInfo) IsGenesis() (bool, common.NodeType) {
-	if r != nil && r.Height == 0 {
+	if r != nil && (r.Height == 0 || r.Height.IsNil()) {
 		return true, r.Type
 	}
 	return false, common.NoneNodeType
@@ -962,8 +967,8 @@ const (
 )
 
 var rrtypesOrder = map[RRAType]int{
-	RRADeposit:    0,
-	RRAPenalty:    1,
+	RRAPenalty:    0,
+	RRADeposit:    1,
 	RRAWithdraw:   2,
 	RRAStatus:     3,
 	RRADelegate:   7,
@@ -1143,7 +1148,7 @@ func (a *RRAct) IsValid() bool {
 		}
 		return true
 	case RRAPenalty:
-		return a.Amount != nil && a.Amount.Sign() > 0 && a.Account == nil
+		return a.Amount != nil && a.Amount.Sign() >= 0 && a.Account == nil
 	case RRAStatus:
 		if a.Account != nil || a.Amount == nil || a.Amount.Sign() == 0 {
 			return false

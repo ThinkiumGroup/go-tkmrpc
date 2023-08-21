@@ -21,7 +21,6 @@ type TxData interface {
 	value() *big.Int
 	nonce() uint64
 	to() *common.Address
-	from() *common.Address
 
 	rawSignatureValues() (v, r, s *big.Int)
 	setSignatureValues(chainID, v, r, s *big.Int)

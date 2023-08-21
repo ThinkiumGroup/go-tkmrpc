@@ -23,10 +23,6 @@ type DynamicFeeTx struct {
 	S *big.Int `json:"s" gencodec:"required"`
 }
 
-func (tx *DynamicFeeTx) getsigAndPub() (sig, pub []byte) {
-	panic("implement me")
-}
-
 // copy creates a deep copy of the transaction data and initializes all fields.
 func (tx *DynamicFeeTx) copy() TxData {
 	cpy := &DynamicFeeTx{

@@ -39,6 +39,8 @@ service node {
     rpc ListRRChanges(RpcRRChangesReq) returns (RpcResponseStream);
     rpc GetConfirmeds(RpcBlockHeight) returns (RpcResponseStream);
     rpc RebootMainChain(RpcReboot) returns (RpcResponse);
+    rpc ListBridgeSessionsToAt(RpcBridgeToAt) returns (RpcResponseStream);
+    rpc ListRRInfos(RpcBlockTxsReq) returns (RpcResponseStream);
 }
 
 message RpcChainInfoReq {
@@ -179,4 +181,11 @@ message RpcReboot {
     repeated bytes comm = 3;
     repeated bytes pubs = 4;
     repeated bytes sigs = 5;
+}
+
+message RpcBridgeToAt {
+    uint32 currentChain = 1;
+    uint64 atHeight = 2;
+    uint32 toChain = 3;
+    uint64 reqHeight = 4;
 }

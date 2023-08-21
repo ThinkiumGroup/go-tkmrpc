@@ -15,6 +15,7 @@
 package models
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 
@@ -184,4 +185,103 @@ type PbftBlockNum interface {
 	Elected() bool
 	ElectionEnded() bool
 	ShouldGenSeed() bool
+}
+
+type (
+	ConsensusStage uint8
+
+	ConsensusContext struct {
+		ChainID   common.ChainID
+		Stage     ConsensusStage
+		Reviving  bool // reviving consensus
+		Replaying bool // replaying blocks in data node
+		Syncing   bool // syncing blocks for get world state of the chain
+	}
+)
+
+const (
+	CSProposing ConsensusStage = iota
+	CSPreparing
+	CSCommitting
+)
+
+func (s ConsensusStage) Proposing() bool {
+	return s == CSProposing
+}
+
+func (s ConsensusStage) Preparing() bool {
+	return s == CSPreparing
+}
+
+func (s ConsensusStage) Committing() bool {
+	return s == CSCommitting
+}
+
+func (s ConsensusStage) String() string {
+	switch s {
+	case CSProposing:
+		return "PROPOSING"
+	case CSPreparing:
+		return "PREPARING"
+	case CSCommitting:
+		return "COMMITTING"
+	default:
+		return "UNKNOWN-STAGE"
+	}
+}
+
+func (s ConsensusStage) Short() string {
+	switch s {
+	case CSProposing:
+		return "GEN"
+	case CSPreparing:
+		return "VER"
+	case CSCommitting:
+		return "CO"
+	default:
+		return "UA"
+	}
+}
+
+func (ctx *ConsensusContext) String() string {
+	if ctx == nil {
+		return fmt.Sprintf("ConsCtx<nil>")
+	}
+	buf := new(bytes.Buffer)
+	buf.WriteString("ConsCtx{")
+	buf.WriteString(ctx.Stage.String())
+	if ctx.Reviving {
+		buf.WriteString(" REVIVING")
+	}
+	if ctx.Replaying {
+		buf.WriteString(" REPLAYING")
+	}
+	if ctx.Syncing {
+		buf.WriteString(" SYNCING")
+	}
+	buf.WriteByte('}')
+	return buf.String()
+}
+
+func (ctx *ConsensusContext) RealTime() bool {
+	return ctx != nil && ctx.Reviving == false && ctx.Replaying == false && ctx.Syncing == false
+}
+
+func (ctx *ConsensusContext) Restoring() bool {
+	return ctx.Replaying || ctx.Syncing
+}
+
+func (ctx *ConsensusContext) SetProposing() *ConsensusContext {
+	ctx.Stage = CSProposing
+	return ctx
+}
+
+func (ctx *ConsensusContext) SetPreparing() *ConsensusContext {
+	ctx.Stage = CSPreparing
+	return ctx
+}
+
+func (ctx *ConsensusContext) SetCommitting() *ConsensusContext {
+	ctx.Stage = CSCommitting
+	return ctx
 }

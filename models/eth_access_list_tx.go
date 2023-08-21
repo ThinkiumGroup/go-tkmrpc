@@ -18,6 +18,21 @@ type AccessTuple struct {
 	StorageKeys []common.Hash  `json:"storageKeys"    gencodec:"required"`
 }
 
+func (a AccessTuple) Like(o AccessTuple) bool {
+	if a.Address != o.Address {
+		return false
+	}
+	if len(a.StorageKeys) != len(o.StorageKeys) {
+		return false
+	}
+	for i := 0; i < len(a.StorageKeys); i++ {
+		if a.StorageKeys[i] != o.StorageKeys[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // StorageKeys returns the total number of storage keys in the access list.
 func (al AccessList) StorageKeys() int {
 	sum := 0
@@ -32,6 +47,21 @@ func (al AccessList) String() string {
 		return "<nil>"
 	}
 	return fmt.Sprintf("%s", []AccessTuple(al))
+}
+
+func (al AccessList) Like(ol AccessList) bool {
+	if len(al) == 0 && len(ol) == 0 {
+		return true
+	}
+	if len(al) != len(ol) {
+		return false
+	}
+	for i, a := range al {
+		if a.Like(ol[i]) == false {
+			return false
+		}
+	}
+	return true
 }
 
 // AccessListTx is the data of EIP-2930 access list transactions.

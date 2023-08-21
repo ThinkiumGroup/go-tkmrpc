@@ -161,6 +161,13 @@ type (
 		Prev   uint16      `json:"prev"`
 		New    uint16      `json:"new"`
 	}
+
+	PenalizeResult struct {
+		TxHash common.Hash `json:"-"`
+		Type   ActRptType  `json:"-"`
+		NIDH   common.Hash `json:"nidh"`
+		Amount *big.Int    `json:"penalized"`
+	}
 )
 
 const (
@@ -295,6 +302,18 @@ func (r *StatusResult) String() string {
 		return "STR<nil>"
 	}
 	return fmt.Sprintf("STR{Tx:%x Typ:%d NIDH:%x Prev:%d New:%d}", r.TxHash[:], r.Type, r.NIDH[:], r.Prev, r.New)
+}
+
+func (p *PenalizeResult) Receipt() *RRActReceipt {
+	bs, _ := json.Marshal(p)
+	return &RRActReceipt{TxHash: p.TxHash, Status: ReceiptStatusSuccessful, Type: p.Type, Msg: string(bs)}
+}
+
+func (p *PenalizeResult) String() string {
+	if p == nil {
+		return "PEN<nil>"
+	}
+	return fmt.Sprintf("PEN{Tx:%x Typ:%d NIDH:%x Amount:%s}", p.TxHash[:], p.Type, p.NIDH[:], math.BigForPrint(p.Amount))
 }
 
 //

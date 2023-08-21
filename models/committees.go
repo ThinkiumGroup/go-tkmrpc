@@ -90,6 +90,14 @@ func (c *Committee) Clone() *Committee {
 	return comm
 }
 
+func (c *Committee) ProposerAt(num common.BlockNum) common.NodeID {
+	if c == nil || c.Size() == 0 {
+		return common.NodeID{}
+	}
+	idx := int(num) % c.Size()
+	return c.Members[idx]
+}
+
 func (c *Committee) Index(id common.NodeID) common.CommID {
 	c.indexLock.Lock()
 	defer c.indexLock.Unlock()

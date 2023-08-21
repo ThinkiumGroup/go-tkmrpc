@@ -42,6 +42,7 @@ var (
 	AddressOfPenalty             = common.BytesToAddress([]byte{1, 0, 3})
 	AddressOfManageCommittee     = common.BytesToAddress([]byte{1, 0, 4})
 	AddressOfUpdateVersion       = common.BytesToAddress([]byte{1, 0, 5})
+	AddressOfBridgeInfo          = common.BytesToAddress([]byte{1, 0, 6})
 	AddressOfForwarder           = common.BytesToAddress([]byte{1, 0, 7}) // forward the principal tx to vm by agent tx and all gas paid by agent. NEVER set to NoGas!!
 	AddressOfWriteCashCheck      = common.BytesToAddress([]byte{2, 0, 0})
 	AddressOfCashCashCheck       = common.BytesToAddress([]byte{3, 0, 0})
@@ -53,6 +54,21 @@ var (
 	AddressOfRewardFrom          = common.HexToAddress("1111111111111111111111111111111111111111")   // reward account
 	AddressOfRewardForGenesis    = common.HexToAddress("0x0b70e6f67512bcd07b7d1cbbd04dbbfadfbeaf37") // binding account of genesis nodes
 	AddressOfBlackHole           = common.HexToAddress("2222222222222222222222222222222222222222")   // melt down currency
+	AddressOfGasReward           = AddressOfBlackHole                                                // melt down gas
+	AddressOfSysBridge           = common.HexToAddress("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")   // bridge
+	// AddressOfGasReward           = common.HexToAddress("0x7015422e66cc4ea4d92f90d39d2109472b2188fd") // gas fee account
+)
+
+const (
+	// testing constant
+	AccountNum     = 100
+	InitAccountVal = 100000000
+	// TxPerAccountPerBlock = 1
+	// MaxTxVal             = 10
+)
+
+const (
+	AccFlagBanned = iota // account banned
 )
 
 // 1. currency type can be determinded in a normal transfer, default is basic currency
@@ -67,6 +83,8 @@ type Account struct {
 	CodeHash        []byte          `json:"codeHash"`        // hash of contract code
 	LongStorageRoot []byte          `json:"longStorageRoot"` // more complex storage for contract, Trie(key: Hash, value: []byte)
 	Creator         *common.Address `json:"creator"`         // the creator of the current contract account
+	Flags           *big.Int        `json:"flags"`           // one bit for one flag
+	Properties      []byte          `json:"properties"`      // properties in json format
 }
 
 type accountV1 struct {
@@ -87,6 +105,37 @@ type accountV2 struct {
 	LongStorageRoot []byte
 }
 
+type accountV3 struct {
+	Addr            common.Address
+	Nonce           uint64
+	Balance         *big.Int
+	LocalCurrency   *big.Int
+	StorageRoot     []byte
+	CodeHash        []byte
+	LongStorageRoot []byte
+	Creator         *common.Address
+}
+
+func NewAccount(addr common.Address, balance *big.Int) *Account {
+	if balance == nil {
+		balance = big.NewInt(0)
+	} else {
+		balance = big.NewInt(0).Set(balance)
+	}
+	return &Account{
+		Addr:    addr,
+		Nonce:   0,
+		Balance: balance,
+	}
+}
+
+func (a *Account) FlagOf(bit int) bool {
+	if a == nil || a.Flags == nil || a.Flags.Sign() == 0 {
+		return false
+	}
+	return a.Flags.Bit(bit) == 0x1
+}
+
 // for compatible with old version, if there's no local currency and LongStorage, hash should same
 // with the hash of old version account.
 // TODO delete compatible when restart the chain with new version
@@ -94,8 +143,20 @@ func (a *Account) HashValue() ([]byte, error) {
 	if a == nil {
 		return common.EncodeAndHash(a)
 	}
-	if a.Creator != nil {
+	if a.Flags != nil || len(a.Properties) > 0 {
 		return common.EncodeAndHash(a)
+	}
+	if a.Creator != nil {
+		return common.EncodeAndHash(&accountV3{
+			Addr:            a.Addr,
+			Nonce:           a.Nonce,
+			Balance:         a.Balance,
+			LocalCurrency:   a.LocalCurrency,
+			StorageRoot:     a.StorageRoot,
+			CodeHash:        a.CodeHash,
+			LongStorageRoot: a.LongStorageRoot,
+			Creator:         a.Creator,
+		})
 	}
 	if a.LocalCurrency == nil && trie.IsEmptyTrieRoot(a.LongStorageRoot) {
 		return common.EncodeAndHash(&accountV1{
@@ -131,6 +192,8 @@ func (a *Account) Clone() *Account {
 		CodeHash:        common.CloneByteSlice(a.CodeHash),
 		LongStorageRoot: common.CloneByteSlice(a.LongStorageRoot),
 		Creator:         a.Creator.Clone(),
+		Flags:           math.CopyBigInt(a.Flags),
+		Properties:      common.CopyBytes(a.Properties),
 	}
 	return ret
 }

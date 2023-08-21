@@ -94,6 +94,7 @@ type ElectMessage struct {
 	// I.e., the elected committee is for epoch EpochNum+1
 	EpochNum     common.EpochNum `json:"epoch"` // the epoch when election starts
 	ElectChainID common.ChainID  `json:"chainid"`
+	header       *BlockHeader
 }
 
 func (p *ElectMessage) Hash() common.Hash {
@@ -106,6 +107,14 @@ func (p *ElectMessage) GetChainID() common.ChainID {
 
 func (p *ElectMessage) String() string {
 	return fmt.Sprintf("Electing{ChainID:%d Epoch:%d}", p.ElectChainID, p.EpochNum)
+}
+
+func (p *ElectMessage) SetHeader(header *BlockHeader) {
+	p.header = header
+}
+
+func (p *ElectMessage) GetHeader() *BlockHeader {
+	return p.header
 }
 
 type ElectMessages []*ElectMessage
@@ -128,21 +137,34 @@ func (s ElectMessages) InfoString(level common.IndentLevel) string {
 // hash in the header. In this way, the attendance table of each block is locked in the header,
 // so there is no need to record blocknum separately
 type AttendanceRecord struct {
-	Epoch      common.EpochNum // current epoch
-	Attendance *big.Int        // Indicates by bit whether the corresponding data block is empty, Attendance.Bit(BlockNum)==1 is normal block and ==0 is empty block
-	DataNodes  common.NodeIDs  // List of datanode nodeid in ascending order
-	Stats      []int           // Stats of alive data nodes
+	Epoch       common.EpochNum // current epoch
+	Attendance  *big.Int        // Indicates by bit whether the corresponding data block is empty, Attendance.Bit(BlockNum)==1 is normal block and ==0 is empty block
+	DataNodes   common.NodeIDs  // List of datanode nodeid in ascending order
+	Stats       []int           // Stats of alive data nodes
+	AuditChains common.ChainIDs // since v3.2.1, auditing chains, same order in each slot in the Audits bits, created when AttendanceRecord creating, no modifying allowed
+	Audits      *big.Int        // since v3.2.1, audition record, EpochLength*NumberOfChains bits
 
 	nodeIdxs map[common.NodeID]int // cache data node id -> index of Stats
 }
 
-func NewAttendanceRecord(epoch common.EpochNum, dataNodes ...common.NodeID) *AttendanceRecord {
+type oldAttendanceRecord struct {
+	Epoch      common.EpochNum
+	Attendance *big.Int
+	DataNodes  common.NodeIDs
+	Stats      []int
+}
+
+func NewAttendanceRecord(epoch common.EpochNum, chainIds common.ChainIDs, dataNodes ...common.NodeID) *AttendanceRecord {
 	r := &AttendanceRecord{
 		Epoch:      epoch,
 		Attendance: big.NewInt(0),
 		DataNodes:  nil,
 	}
 	r.setDataNodes(dataNodes...)
+	if len(chainIds) > 0 {
+		r.AuditChains = chainIds.Clone()
+		r.Audits = big.NewInt(0)
+	}
 	return r
 }
 
@@ -161,6 +183,91 @@ func (a *AttendanceRecord) SetAttendance(epoch common.EpochNum, block common.Blo
 func (a *AttendanceRecord) SetAbsentness(epoch common.EpochNum, block common.BlockNum) {
 	a.check(epoch, block)
 	a.Attendance.SetBit(a.Attendance, int(block), 0)
+}
+
+func (a *AttendanceRecord) NoAudits() bool {
+	return a != nil && a.AuditChains == nil && a.Audits == nil
+}
+
+func (a *AttendanceRecord) SetAudits(num common.BlockNum, summaries []*BlockSummary) {
+	if a == nil || len(a.AuditChains) == 0 || len(summaries) == 0 || !num.IsValid() {
+		return
+	}
+	idMap := make(map[common.ChainID]int)
+	for i, cid := range a.AuditChains {
+		idMap[cid] = i
+	}
+	for _, summary := range summaries {
+		if !summary.IsValid() {
+			continue
+		}
+		cid := summary.GetChainID()
+		i, exist := idMap[cid]
+		if !exist {
+			continue
+		}
+		if a.Audits == nil {
+			a.Audits = big.NewInt(0)
+		}
+		a.Audits.SetBit(a.Audits, int(num)*len(a.AuditChains)+i, 1)
+	}
+}
+
+func (a *AttendanceRecord) CheckAudits(num common.BlockNum, summaries []*BlockSummary) error {
+	if a == nil || !num.IsValid() {
+		return nil
+	}
+	if len(a.AuditChains) == 0 {
+		if a.Audits != nil {
+			return errors.New("audit bits should be nil")
+		}
+		return nil
+	}
+	auditedMap := make(map[common.ChainID]struct{})
+	for _, summary := range summaries {
+		if !summary.IsValid() {
+			continue
+		}
+		auditedMap[summary.GetChainID()] = struct{}{}
+	}
+
+	if len(auditedMap) > 0 {
+		if a.Audits == nil {
+			return errors.New("no audit bits found")
+		}
+	}
+
+	offset := int(num) * len(a.AuditChains)
+	for i, cid := range a.AuditChains {
+		if _, exist := auditedMap[cid]; exist {
+			// should be 1
+			if a.Audits.Bit(offset+i) != 1 {
+				return fmt.Errorf("missing audit bit at index:%d ChainID:%d", i, cid)
+			}
+		} else {
+			// should be 0
+			if a.Audits.Bit(offset+i) != 0 {
+				return fmt.Errorf("missing audit info at index:%d ChainID:%d", i, cid)
+			}
+		}
+	}
+	return nil
+}
+
+func (a *AttendanceRecord) HashValue() ([]byte, error) {
+	if a == nil {
+		return common.EncodeAndHash(a)
+	}
+	if a.NoAudits() {
+		old := &oldAttendanceRecord{
+			Epoch:      a.Epoch,
+			Attendance: a.Attendance,
+			DataNodes:  a.DataNodes,
+			Stats:      a.Stats,
+		}
+		return common.EncodeAndHash(old)
+	}
+	return common.EncodeAndHash(a)
 }
 
 func (a *AttendanceRecord) Hash() (*common.Hash, error) {
@@ -200,7 +307,7 @@ func (a *AttendanceRecord) AddDataNodeStat(nodeId common.NodeID) {
 	}
 }
 
-func (a *AttendanceRecord) IsLegalFirst(datanodes common.NodeIDs) error {
+func (a *AttendanceRecord) IsLegalFirst(chainIds common.ChainIDs, datanodes common.NodeIDs) error {
 	if a == nil {
 		return errors.New("nil attendance")
 	}
@@ -217,6 +324,15 @@ func (a *AttendanceRecord) IsLegalFirst(datanodes common.NodeIDs) error {
 	for _, stat := range a.Stats {
 		if stat != 0 && stat != 1 {
 			return errors.New("new stat should be 0 or 1")
+		}
+	}
+	// check audits
+	if !chainIds.Equal(a.AuditChains) {
+		return errors.New("illegal audit chain ids")
+	}
+	if a.AuditChains != nil {
+		if a.Audits == nil || a.Audits.BitLen() > len(a.AuditChains) {
+			return errors.New("illegal audit slot bits")
 		}
 	}
 	return nil
@@ -243,6 +359,7 @@ func (a *AttendanceRecord) IsLegalNext(next *AttendanceRecord) error {
 				return errors.New("new stat should be 0 or 1")
 			}
 		}
+
 		return nil
 	}
 
@@ -264,6 +381,12 @@ func (a *AttendanceRecord) IsLegalNext(next *AttendanceRecord) error {
 		}
 	}
 
+	if !a.NoAudits() {
+		if !next.AuditChains.Equal(a.AuditChains) {
+			return errors.New("audit chains should not change in one epoch")
+		}
+	}
+
 	return nil
 }
 
@@ -271,14 +394,39 @@ func (a *AttendanceRecord) String() string {
 	if a == nil {
 		return fmt.Sprintf("AttendanceRecord<nil>")
 	}
-	return fmt.Sprintf("AttendanceRecord{Epoch:%d Attendance.BitLen:%d DataNodes:%s Stats:%v}",
-		a.Epoch, a.Attendance.BitLen(), a.DataNodes, a.Stats)
+	if a.NoAudits() {
+		return fmt.Sprintf("AttendanceRecord{Epoch:%d Attendance.BitLen:%d DataNodes:%s Stats:%v}",
+			a.Epoch, a.Attendance.BitLen(), a.DataNodes, a.Stats)
+	} else {
+		bl := 0
+		if a.Audits != nil {
+			bl = a.Audits.BitLen()
+		}
+		return fmt.Sprintf("AttendanceRecord{Epoch:%d Attendance.BitLen:%d DataNodes:%s Stats:%v "+
+			"Audits:(Chains:%v BitLen:%d)}", a.Epoch, a.Attendance.BitLen(), a.DataNodes, a.Stats,
+			a.AuditChains, bl)
+	}
 }
 
-func (a *AttendanceRecord) Formalize() {
-	// if a != nil && len(a.DataNodes) > 1 {
-	// 	sort.Sort(a.DataNodes)
-	// }
+func (a *AttendanceRecord) AuditedChains(num common.BlockNum) common.ChainIDs {
+	if a == nil || len(a.AuditChains) == 0 || a.Audits == nil || !num.IsValid() {
+		return nil
+	}
+	var audited common.ChainIDs
+	offset := int(num) * len(a.AuditChains)
+	for i, cid := range a.AuditChains {
+		if bit := a.Audits.Bit(offset + i); bit == 1 {
+			audited = append(audited, cid)
+		}
+	}
+	return audited
+}
+
+func (a *AttendanceRecord) AuditString(num common.BlockNum) string {
+	if num.IsNil() {
+		return a.String()
+	}
+	return fmt.Sprintf("%s Audited:%s", a.String(), a.AuditedChains(num).String())
 }
 
 func (a *AttendanceRecord) dataNodeIdx(nid common.NodeID) int {
@@ -310,10 +458,12 @@ func (a *AttendanceRecord) Clone() *AttendanceRecord {
 	stats := make([]int, len(a.Stats))
 	copy(stats, a.Stats)
 	b := &AttendanceRecord{
-		Epoch:      a.Epoch,
-		Attendance: math.CopyBigInt(a.Attendance),
-		DataNodes:  a.DataNodes.Clone(),
-		Stats:      stats,
+		Epoch:       a.Epoch,
+		Attendance:  math.CopyBigInt(a.Attendance),
+		DataNodes:   a.DataNodes.Clone(),
+		Stats:       stats,
+		AuditChains: a.AuditChains.Clone(),
+		Audits:      math.CopyBigInt(a.Audits),
 	}
 	return b
 }
@@ -636,6 +786,128 @@ func (a *RewardRequest) Verify(proofedHash common.Hash) error {
 	return nil
 }
 
+func (a *RewardRequest) AuditResult() (countMap map[common.NodeID]int, penaltyMap map[common.NodeID]common.ChainID, err error) {
+	if len(a.CommitteePks) == 0 {
+		return nil, nil, nil
+	}
+	if a.Attendance == nil || len(a.Attendance.AuditChains) == 0 ||
+		a.Attendance.Audits == nil || a.Attendance.Audits.Sign() == 0 {
+		// all committees do not conduct audits, it is considered that there is a problem with all sub-chains
+		return nil, nil, nil
+	}
+	nodeIds := make([]common.NodeID, 0, len(a.CommitteePks))
+	for _, pk := range a.CommitteePks {
+		nodeId, err := PubToNodeID(pk)
+		if err != nil {
+			return nil, nil, fmt.Errorf("illegal public key(%x) found in committee:%v",
+				common.ForPrint(pk), err)
+		}
+		nodeIds = append(nodeIds, nodeId)
+	}
+
+	// Record the number of times each consensus node audits each sub-chain
+	counts := new(auditedCountMap)
+
+	auditedLength := a.Attendance.Audits.BitLen()
+	offset := 0
+	chainSize := len(a.Attendance.AuditChains)
+	maxBitLen := int(common.BlocksInEpoch) * chainSize
+	commBitSize := len(nodeIds) * chainSize
+	for ni, nodeId := range nodeIds {
+		offset = ni * chainSize
+		for offset <= auditedLength && offset < maxBitLen {
+			for ci, chainId := range a.Attendance.AuditChains {
+				if a.Attendance.Audits.Bit(offset+ci) == 1 {
+					counts.count(nodeId, chainId)
+				}
+			}
+			offset += commBitSize
+		}
+	}
+
+	countMap, penaltyMap = counts.result(nodeIds, a.Attendance.AuditChains)
+	return countMap, penaltyMap, nil
+}
+
+type auditedCountMap struct {
+	reverse map[common.ChainID]map[common.NodeID]int
+	chains  map[common.ChainID]int
+	nodeids map[common.NodeID]int
+}
+
+func (cm *auditedCountMap) count(nid common.NodeID, cid common.ChainID) {
+	if cm.reverse == nil {
+		cm.reverse = make(map[common.ChainID]map[common.NodeID]int)
+		cm.chains = make(map[common.ChainID]int)
+		cm.nodeids = make(map[common.NodeID]int)
+	}
+
+	{
+		c := cm.chains[cid]
+		cm.chains[cid] = c + 1
+	}
+
+	{
+		c := cm.nodeids[nid]
+		cm.nodeids[nid] = c + 1
+	}
+
+	r := cm.reverse[cid]
+	if r == nil {
+		r = make(map[common.NodeID]int)
+		cm.reverse[cid] = r
+		r[nid] = 1
+	} else {
+		c := r[nid]
+		r[nid] = c + 1
+	}
+}
+
+func (cm *auditedCountMap) result(nodeIds []common.NodeID, chainIds common.ChainIDs) (
+	countMap map[common.NodeID]int, penaltyMap map[common.NodeID]common.ChainID) {
+	if len(nodeIds) == 0 || len(chainIds) == 0 {
+		return nil, nil
+	}
+	if len(cm.reverse) == 0 {
+		return nil, nil
+	}
+	penaltyMap = make(map[common.NodeID]common.ChainID)
+	for _, cid := range chainIds {
+		subsum := cm.chains[cid]
+		if subsum < len(nodeIds) {
+			// number of confirmed blocks < size of committee, ignore penalty checking.
+			// because it's easy to have no block to confirm
+			continue
+		}
+		subnodes := cm.reverse[cid]
+		if len(subnodes) < len(nodeIds)*1/2 {
+			// If most nodes fail to confirm, it is considered that there is a problem
+			// with the sub-chain
+			continue
+		}
+		for _, nid := range nodeIds {
+			if c, exist := subnodes[nid]; !exist || c <= 0 {
+				penaltyMap[nid] = cid
+			}
+		}
+	}
+
+	if len(penaltyMap) == 0 {
+		return cm.nodeids, nil
+	}
+	if len(cm.nodeids) == len(penaltyMap) {
+		return
+	}
+	countMap = make(map[common.NodeID]int)
+	for nid, count := range cm.nodeids {
+		if _, exist := penaltyMap[nid]; exist {
+			continue
+		}
+		countMap[nid] = count
+	}
+	return
+}
+
 type RewardRequests []*RewardRequest
 
 func (rs RewardRequests) Len() int {
@@ -830,6 +1102,16 @@ func (a *AuditorPas) Clone() *AuditorPas {
 	}
 }
 
+func (a *AuditorPas) Equal(o *AuditorPas) bool {
+	if a == o {
+		return true
+	}
+	if a == nil || o == nil {
+		return false
+	}
+	return a.Type == o.Type && a.Pas.Equal(o.Pas)
+}
+
 func (a *AuditorPas) Verify(id common.ChainID, height common.Height, hob []byte) (pub []byte, err error) {
 	if a == nil {
 		return nil, common.ErrNil
@@ -913,6 +1195,24 @@ func (as AuditorPass) Less(i, j int) bool {
 	}
 	// Type==true comes first
 	return as[i].Type
+}
+
+func (as AuditorPass) Equal(os AuditorPass) bool {
+	if as == nil && os == nil {
+		return true
+	}
+	if as == nil || os == nil {
+		return false
+	}
+	if len(as) != len(os) {
+		return false
+	}
+	for i, a := range as {
+		if !a.Equal(os[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func (as AuditorPass) Merge(apass AuditorPass) AuditorPass {

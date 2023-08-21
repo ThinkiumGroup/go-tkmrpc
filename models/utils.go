@@ -83,3 +83,10 @@ type DSError interface {
 	error // static err message
 	Dynamic() error
 }
+
+func EmptyBytesIfNil(bs []byte) []byte {
+	if bs == nil {
+		return []byte("")
+	}
+	return bs
+}

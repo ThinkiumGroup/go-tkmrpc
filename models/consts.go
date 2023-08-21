@@ -41,7 +41,10 @@ const (
 	SummaryVersion0 = 0 // original version
 	SummaryVersion1 = 1 // add chainid and height to hash
 	SummaryVersion2 = 2 // add HistoryProof and AuditorPass for auditing, use Header instead of chainid+height+BlockHash
-	SummaryVersion  = SummaryVersion2
+	SummaryVersion3 = 3 // HashValue changes
+	SummaryVersion4 = 4 // rollback to original version (ChainID+Height+HoB+Comm)
+	SummaryVersion5 = 5 // use HistoryProof to proof NextComm.Hash() -> BlockHash, if NextComm exists
+	SummaryVersion  = SummaryVersion5
 
 	// RRInfoVersion:
 	// 1: NodeCount

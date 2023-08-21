@@ -37,12 +37,10 @@ func (p *PubAndSig) Equal(o *PubAndSig) bool {
 	if p == o {
 		return true
 	}
-	if p != nil && o != nil &&
-		bytes.Equal(p.Signature, o.Signature) &&
-		bytes.Equal(p.PublicKey, o.PublicKey) {
-		return true
+	if p == nil || o == nil {
+		return false
 	}
-	return false
+	return bytes.Equal(p.PublicKey, o.PublicKey) && bytes.Equal(p.Signature, o.Signature)
 }
 
 func (p *PubAndSig) Equals(v interface{}) bool {
@@ -50,7 +48,15 @@ func (p *PubAndSig) Equals(v interface{}) bool {
 	if !ok {
 		return false
 	}
-	return p.Equal(o)
+	if p == o {
+		return true
+	}
+	if p != nil && o != nil &&
+		bytes.Equal(p.Signature, o.Signature) &&
+		bytes.Equal(p.PublicKey, o.PublicKey) {
+		return true
+	}
+	return false
 }
 
 func (p *PubAndSig) IsValid() bool {
