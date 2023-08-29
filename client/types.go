@@ -208,8 +208,8 @@ type (
 
 	Confirmeds struct {
 		At   common.Height
-		Root []byte
 		Data models.ChainConfirmeds
+		Root []byte
 	}
 )
 
