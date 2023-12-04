@@ -22,6 +22,8 @@ import (
 
 type ChainStats struct {
 	ChainID            common.ChainID    `json:"chainid"`            // id of current chain
+	BaseChainID        uint64            `json:"basechainid"`        // common.BigChainIDBase
+	ETHChainID         string            `json:"ethchainid"`         // eth chain id of current chain
 	CurrentHeight      uint64            `json:"currentheight"`      // current height of the chain
 	SumTxCount         uint64            `json:"txcount"`            // The number of current chain transactions after this launch
 	AllTps             uint64            `json:"tps"`                // Current chain TPS after this launch
@@ -57,6 +59,7 @@ func (s *ChainStats) InfoString(level common.IndentLevel) string {
 	base := level.IndentString()
 	next := level + 1
 	return fmt.Sprintf("ChainStats{"+
+		"\n%s\tChainID(+BaseChainID=ETHChainID): %d(+%d=%s)"+
 		"\n%s\tCurrentHeight: %d"+
 		"\n%s\tSumTxCount: %d"+
 		"\n%s\tAllTps: %d"+
@@ -77,6 +80,7 @@ func (s *ChainStats) InfoString(level common.IndentLevel) string {
 		"\n%s\tLastConfirmed: %s"+
 		"\n%s\tVersion: %s"+
 		"}",
+		base, s.ChainID, s.BaseChainID, s.ETHChainID,
 		base, s.CurrentHeight,
 		base, s.SumTxCount,
 		base, s.AllTps,
