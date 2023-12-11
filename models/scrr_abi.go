@@ -31,10 +31,6 @@ var (
 	RRPenalizeID        string
 )
 
-func init() {
-	InitRRAbi()
-}
-
 const (
 	scrrAbiJson string = `
 [

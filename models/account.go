@@ -44,6 +44,7 @@ var (
 	AddressOfUpdateVersion       = common.BytesToAddress([]byte{1, 0, 5})
 	AddressOfBridgeInfo          = common.BytesToAddress([]byte{1, 0, 6})
 	AddressOfForwarder           = common.BytesToAddress([]byte{1, 0, 7}) // forward the principal tx to vm by agent tx and all gas paid by agent. NEVER set to NoGas!!
+	AddressOfTronProto           = common.BytesToAddress([]byte{1, 0, 8})
 	AddressOfWriteCashCheck      = common.BytesToAddress([]byte{2, 0, 0})
 	AddressOfCashCashCheck       = common.BytesToAddress([]byte{3, 0, 0})
 	AddressOfCancelCashCheck     = common.BytesToAddress([]byte{4, 0, 0})
