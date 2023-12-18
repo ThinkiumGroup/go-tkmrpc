@@ -31,6 +31,7 @@ type ContractLogger interface {
 	InputString(address common.Address, input []byte) string
 	ReturnsString(address common.Address, funcSig []byte, output []byte) string
 	EventString(address common.Address, txLog *Log) string
+	FindAbi(address common.Address) (abi.ABI, bool)
 }
 
 type sysContracts struct {
@@ -83,4 +84,12 @@ func (sc *sysContracts) EventString(address common.Address, txLog *Log) string {
 	}
 	s, _ := ab.EventString(txLog.Topics, txLog.Data)
 	return s
+}
+
+func (sc *sysContracts) FindAbi(address common.Address) (abi.ABI, bool) {
+	ab, exist := sc.abis[address]
+	if !exist {
+		return abi.ABI{}, false
+	}
+	return ab, true
 }
